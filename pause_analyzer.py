@@ -60,6 +60,9 @@ def summarize(pauses: Sequence[float]) -> dict[str, float | int]:
             'pause_max': 0.0,
             'pause_std': 0.0,
             'pause_total': 0.0,
+            'pause_q1': 0.0,
+            'pause_q2': 0.0,
+            'pause_q3': 0.0,
         }
     pause_count = len(pauses)
     pause_total = float(sum(pauses))
@@ -68,6 +71,11 @@ def summarize(pauses: Sequence[float]) -> dict[str, float | int]:
     pause_min = min(pauses)
     pause_max = max(pauses)
     pause_std = statistics.stdev(pauses) if pause_count > 1 else 0.0
+    # Compute quartiles
+    sorted_pauses = sorted(pauses)
+    pause_q1 = statistics.quantiles(sorted_pauses, n=4)[0] if pause_count > 1 else pause_median
+    pause_q2 = pause_median
+    pause_q3 = statistics.quantiles(sorted_pauses, n=4)[2] if pause_count > 1 else pause_median
     return {
         'pause_count': pause_count,
         'pause_mean': pause_mean,
@@ -76,6 +84,9 @@ def summarize(pauses: Sequence[float]) -> dict[str, float | int]:
         'pause_max': pause_max,
         'pause_std': pause_std,
         'pause_total': pause_total,
+        'pause_q1': pause_q1,
+        'pause_q2': pause_q2,
+        'pause_q3': pause_q3,
     }
 
 
