@@ -25,24 +25,8 @@
    - `anyon_IDs` (recording identifier, e.g., `Process-rec-006`)
    - `age`, `gender`, `diagnosis` (Dementia/MCI/HC), `MMSE`, `Assigned`, `Notes`
 
-4. **Place the CSV in `data/` as `speechpause_mata.csv`**, or provide the path:
-   ```python
-   from pathlib import Path
-   from dataloader import TranscriptLoader
-   
-   loader = TranscriptLoader(metadata_path=Path('path/to/your/metadata.csv'))
-   ```
+4. **Place the CSV in `data/` as `speechpause_mata.csv`**
 
-5. **Run the analysis:**
-   ```python
-   from dataloader import TranscriptLoader
-   
-   loader = TranscriptLoader()
-   transcript_paths = loader.discover_transcript_files()
-   frames = loader.load_all_transcripts(transcript_paths)
-   metadata = loader.load_metadata()
-   ```
-
-See `transcript_analysis.ipynb` for complete examples.
+5. **Run the analysis `transcript_analysis.ipynb`**
 
 **Note:** The `data/` directory is excluded from git. Never commit private data files.
