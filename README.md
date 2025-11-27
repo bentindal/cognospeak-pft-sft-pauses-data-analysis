@@ -109,3 +109,19 @@ The code is designed for easy classifier swapping. Supported classifiers:
 - **random_forest**: Random Forest (handles non-linear relationships)
 
 To add a new classifier, extend the `get_classifier()` function in `binary_classifier.py`.
+
+## Resetting the Experiment
+
+To delete all stored results and generated files, use the reset script:
+
+```bash
+./reset_experiment.sh
+```
+
+This will delete:
+- `output/` directory (feature importance CSVs)
+- `pause_summary.csv` (generated pause analysis)
+- `combined_transcripts.parquet` (generated combined dataset)
+- `__pycache__/` (Python cache files)
+
+The script will prompt for confirmation before deleting anything.
