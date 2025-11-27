@@ -1,5 +1,7 @@
 # Exclude all data files - highly private
 data/*
+*.parquet
+*.csv
 
 # Python
 __pycache__/
@@ -10,6 +12,9 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.venv/
+venv/
+env/
 
 # Jupyter Notebook
 .ipynb_checkpoints
