@@ -91,6 +91,7 @@ def build_feature_dataset(
     data_dir: Path,
     metadata_path: Optional[Path],
     include_pft: bool = False,
+    include_demographics: bool = False,
 ) -> pd.DataFrame:
     """
     Build a feature dataset with pause metrics per recording for multiclass classification.
@@ -99,10 +100,12 @@ def build_feature_dataset(
         data_dir: Directory containing transcript files
         metadata_path: Path to metadata CSV file
         include_pft: Whether to include PFT features in addition to SFT
+        include_demographics: Whether to include age and gender as features
         
     Returns:
         DataFrame with one row per recording, columns: recording, diagnosis, 
-        and pause feature columns (prefixed with 'sft_' and optionally 'pft_')
+        and pause feature columns (prefixed with 'sft_' and optionally 'pft_'),
+        and optionally 'age' and 'gender_encoded' if include_demographics is True
     """
     loader = TranscriptLoader(data_dir=data_dir, metadata_path=metadata_path)
     metadata = loader.load_metadata()
@@ -160,9 +163,13 @@ def build_feature_dataset(
     
     features_df = pd.DataFrame(rows)
     
-    # Merge with metadata to get diagnosis
+    # Merge with metadata to get diagnosis and optionally demographics
+    merge_cols = ['recording', 'diagnosis']
+    if include_demographics:
+        merge_cols.extend(['age', 'gender'])
+    
     features_df = features_df.merge(
-        metadata[['recording', 'diagnosis']],
+        metadata[merge_cols],
         on='recording',
         how='left',
     )
@@ -175,6 +182,25 @@ def build_feature_dataset(
     # Create multiclass labels: 0 = HC, 1 = MCI, 2 = DEMENTIA
     diagnosis_map = {'HC': 0, 'MCI': 1, 'DEMENTIA': 2}
     features_df['label'] = features_df['diagnosis'].map(diagnosis_map)
+    
+    # Encode gender if demographics are included
+    if include_demographics:
+        # Normalize gender values (handle case variations)
+        features_df['gender'] = features_df['gender'].str.lower().str.strip()
+        # Encode gender as binary: 0 for 'male', 1 for 'female' (or other)
+        # Map common gender values
+        gender_mapping = {
+            'male': 0,
+            'm': 0,
+            'female': 1,
+            'f': 1,
+        }
+        features_df['gender_encoded'] = features_df['gender'].map(gender_mapping)
+        # Fill any unmapped values with the mode or 0.5 (neutral)
+        if features_df['gender_encoded'].isna().any():
+            mode_value = features_df['gender_encoded'].mode()
+            fill_value = mode_value[0] if len(mode_value) > 0 else 0.5
+            features_df['gender_encoded'] = features_df['gender_encoded'].fillna(fill_value)
     
     return features_df
 
