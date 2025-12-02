@@ -3,6 +3,8 @@
 import numpy as np
 import pandas as pd
 from scipy.stats import ttest_ind
+from statsmodels.stats.anova import anova_lm
+from statsmodels.formula.api import ols
 
 from plotting import DIAGNOSIS_PALETTE, HEALTH_PALETTE
 
@@ -121,8 +123,9 @@ def print_ttest_results(test_results: dict, task_type: str = 'both') -> None:
         print("="*80)
         for comparison, results in test_results[task].items():
             sig_marker = '*' if results['significant'] else ''
+            stat_key = 't_statistic' if 't_statistic' in results else 'f_statistic'
             print(f"\n{comparison}:")
-            print(f"  t-statistic: {results['t_statistic']:.4f}")
+            print(f"  {stat_key.replace('_', '-')}: {results[stat_key]:.4f}")
             print(f"  p-value: {results['p_value']:.4f}")
             print(f"  Significant (p < 0.05): {'Yes' if results['significant'] else 'No'} {sig_marker}")
 
@@ -207,16 +210,17 @@ def plot_3class_statistics(pft_data: pd.DataFrame, sft_data: pd.DataFrame, test_
     # 3. T-statistic comparison
     ax4 = plt.subplot(2, 3, 4)
     comparisons_list = ['DEMENTIA\nvs HC', 'DEMENTIA\nvs MCI', 'MCI\nvs HC']
-    pft_tstats = [test_results['PFT'][comp]['t_statistic'] for comp in ['DEMENTIA vs HC', 'DEMENTIA vs MCI', 'MCI vs HC']]
-    sft_tstats = [test_results['SFT'][comp]['t_statistic'] for comp in ['DEMENTIA vs HC', 'DEMENTIA vs MCI', 'MCI vs HC']]
+    stat_key = 't_statistic' if 't_statistic' in test_results['PFT']['DEMENTIA vs HC'] else 'f_statistic'
+    pft_tstats = [test_results['PFT'][comp][stat_key] for comp in ['DEMENTIA vs HC', 'DEMENTIA vs MCI', 'MCI vs HC']]
+    sft_tstats = [test_results['SFT'][comp][stat_key] for comp in ['DEMENTIA vs HC', 'DEMENTIA vs MCI', 'MCI vs HC']]
     x = np.arange(len(comparisons_list))
     width = 0.35
     ax4.bar(x - width/2, pft_tstats, width, label='PFT', alpha=0.7)
     ax4.bar(x + width/2, sft_tstats, width, label='SFT', alpha=0.7)
     ax4.axhline(y=0, color='k', linestyle='-', linewidth=0.5)
     ax4.set_xlabel('Comparison')
-    ax4.set_ylabel('t-statistic')
-    ax4.set_title('T-Statistics by Comparison', fontweight='bold')
+    ax4.set_ylabel(stat_key.replace('_', '-'))
+    ax4.set_title(f'{stat_key.replace("_", "-").title()}s by Comparison', fontweight='bold')
     ax4.set_xticks(x)
     ax4.set_xticklabels(comparisons_list)
     ax4.legend()
@@ -331,12 +335,13 @@ def plot_binary_statistics(pft_data: pd.DataFrame, sft_data: pd.DataFrame, test_
     
     # 3. T-statistic comparison
     ax4 = plt.subplot(2, 3, 4)
-    tstats = [test_results['PFT']['Healthy vs Non-Healthy']['t_statistic'],
-              test_results['SFT']['Healthy vs Non-Healthy']['t_statistic']]
+    stat_key = 't_statistic' if 't_statistic' in test_results['PFT']['Healthy vs Non-Healthy'] else 'f_statistic'
+    tstats = [test_results['PFT']['Healthy vs Non-Healthy'][stat_key],
+              test_results['SFT']['Healthy vs Non-Healthy'][stat_key]]
     bars = ax4.bar(tasks, tstats, color=['#1f77b4', '#ff7f0e'], alpha=0.7)
     ax4.axhline(y=0, color='k', linestyle='-', linewidth=0.5)
-    ax4.set_ylabel('t-statistic')
-    ax4.set_title('T-Statistics: Healthy vs Non-Healthy', fontweight='bold')
+    ax4.set_ylabel(stat_key.replace('_', '-'))
+    ax4.set_title(f'{stat_key.replace("_", "-").title()}s: Healthy vs Non-Healthy', fontweight='bold')
     ax4.grid(axis='y', alpha=0.3)
     # Add text annotations
     for i, (task, tstat) in enumerate(zip(tasks, tstats)):
@@ -373,3 +378,207 @@ def plot_binary_statistics(pft_data: pd.DataFrame, sft_data: pd.DataFrame, test_
     print("SUMMARY: Significant differences (p < 0.05) are marked with *")
     print("="*80)
 
+
+def perform_3class_ancova(pft_data: pd.DataFrame, sft_data: pd.DataFrame) -> dict:
+    """
+    Perform ANCOVA (Analysis of Covariance) for 3-class diagnosis comparison 
+    controlling for age and gender.
+    
+    Args:
+        pft_data: DataFrame with PFT data including 'diagnosis', 'pause_mean', 'age', 'gender' columns
+        sft_data: DataFrame with SFT data including 'diagnosis', 'pause_mean', 'age', 'gender' columns
+        
+    Returns:
+        Dictionary with test results for PFT and SFT
+    """
+    test_results = {
+        'PFT': {},
+        'SFT': {}
+    }
+    
+    comparisons = [
+        ('DEMENTIA', 'HC'),
+        ('DEMENTIA', 'MCI'),
+        ('MCI', 'HC')
+    ]
+    
+    for group1, group2 in comparisons:
+        # PFT ANCOVA
+        pft_subset = pft_data[pft_data['diagnosis'].isin([group1, group2])].copy()
+        pft_subset = pft_subset.dropna(subset=['pause_mean', 'age', 'gender'])
+        
+        if len(pft_subset) > 0 and 'gender' in pft_subset.columns:
+            pft_subset['gender_encoded'] = (pft_subset['gender'] == 'M').astype(int)
+            pft_subset['group'] = (pft_subset['diagnosis'] == group1).astype(int)
+            
+            try:
+                model = ols('pause_mean ~ group + age + gender_encoded', data=pft_subset).fit()
+                anova_table = anova_lm(model, typ=2)
+                p_value = anova_table.loc['group', 'PR(>F)']
+                f_stat = anova_table.loc['group', 'F']
+                
+                test_results['PFT'][f'{group1} vs {group2}'] = {
+                    'f_statistic': f_stat,
+                    'p_value': p_value,
+                    'significant': p_value < 0.05
+                }
+            except Exception as e:
+                # Fallback to t-test if ANCOVA fails
+                pft1 = pft_subset[pft_subset['diagnosis'] == group1]['pause_mean'].dropna()
+                pft2 = pft_subset[pft_subset['diagnosis'] == group2]['pause_mean'].dropna()
+                t_stat, p_value = ttest_ind(pft1, pft2)
+                test_results['PFT'][f'{group1} vs {group2}'] = {
+                    'f_statistic': t_stat,
+                    'p_value': p_value,
+                    'significant': p_value < 0.05
+                }
+        else:
+            # Fallback to t-test if demographics not available
+            pft1 = pft_data[pft_data['diagnosis'] == group1]['pause_mean'].dropna()
+            pft2 = pft_data[pft_data['diagnosis'] == group2]['pause_mean'].dropna()
+            t_stat, p_value = ttest_ind(pft1, pft2)
+            test_results['PFT'][f'{group1} vs {group2}'] = {
+                'f_statistic': t_stat,
+                'p_value': p_value,
+                'significant': p_value < 0.05
+            }
+        
+        # SFT ANCOVA
+        sft_subset = sft_data[sft_data['diagnosis'].isin([group1, group2])].copy()
+        sft_subset = sft_subset.dropna(subset=['pause_mean', 'age', 'gender'])
+        
+        if len(sft_subset) > 0 and 'gender' in sft_subset.columns:
+            sft_subset['gender_encoded'] = (sft_subset['gender'] == 'M').astype(int)
+            sft_subset['group'] = (sft_subset['diagnosis'] == group1).astype(int)
+            
+            try:
+                model = ols('pause_mean ~ group + age + gender_encoded', data=sft_subset).fit()
+                anova_table = anova_lm(model, typ=2)
+                p_value = anova_table.loc['group', 'PR(>F)']
+                f_stat = anova_table.loc['group', 'F']
+                
+                test_results['SFT'][f'{group1} vs {group2}'] = {
+                    'f_statistic': f_stat,
+                    'p_value': p_value,
+                    'significant': p_value < 0.05
+                }
+            except Exception as e:
+                # Fallback to t-test if ANCOVA fails
+                sft1 = sft_subset[sft_subset['diagnosis'] == group1]['pause_mean'].dropna()
+                sft2 = sft_subset[sft_subset['diagnosis'] == group2]['pause_mean'].dropna()
+                t_stat, p_value = ttest_ind(sft1, sft2)
+                test_results['SFT'][f'{group1} vs {group2}'] = {
+                    'f_statistic': t_stat,
+                    'p_value': p_value,
+                    'significant': p_value < 0.05
+                }
+        else:
+            # Fallback to t-test if demographics not available
+            sft1 = sft_data[sft_data['diagnosis'] == group1]['pause_mean'].dropna()
+            sft2 = sft_data[sft_data['diagnosis'] == group2]['pause_mean'].dropna()
+            t_stat, p_value = ttest_ind(sft1, sft2)
+            test_results['SFT'][f'{group1} vs {group2}'] = {
+                'f_statistic': t_stat,
+                'p_value': p_value,
+                'significant': p_value < 0.05
+            }
+    
+    return test_results
+
+
+def perform_binary_ancova(pft_data: pd.DataFrame, sft_data: pd.DataFrame) -> dict:
+    """
+    Perform ANCOVA (Analysis of Covariance) for binary comparison (Healthy vs Non-Healthy)
+    controlling for age and gender.
+    
+    Args:
+        pft_data: DataFrame with PFT data including 'health_status', 'pause_mean', 'age', 'gender' columns
+        sft_data: DataFrame with SFT data including 'health_status', 'pause_mean', 'age', 'gender' columns
+        
+    Returns:
+        Dictionary with test results for PFT and SFT
+    """
+    test_results = {
+        'PFT': {},
+        'SFT': {}
+    }
+    
+    # PFT ANCOVA
+    pft_subset = pft_data.dropna(subset=['pause_mean', 'age', 'gender']).copy()
+    
+    if len(pft_subset) > 0 and 'gender' in pft_subset.columns:
+        pft_subset['gender_encoded'] = (pft_subset['gender'] == 'M').astype(int)
+        pft_subset['group'] = (pft_subset['health_status'] == 'Non-Healthy').astype(int)
+        
+        try:
+            model = ols('pause_mean ~ group + age + gender_encoded', data=pft_subset).fit()
+            anova_table = anova_lm(model, typ=2)
+            p_value = anova_table.loc['group', 'PR(>F)']
+            f_stat = anova_table.loc['group', 'F']
+            
+            test_results['PFT']['Healthy vs Non-Healthy'] = {
+                'f_statistic': f_stat,
+                'p_value': p_value,
+                'significant': p_value < 0.05
+            }
+        except Exception as e:
+            # Fallback to t-test if ANCOVA fails
+            pft_healthy = pft_data[pft_data['health_status'] == 'Healthy']['pause_mean'].dropna()
+            pft_non_healthy = pft_data[pft_data['health_status'] == 'Non-Healthy']['pause_mean'].dropna()
+            t_stat, p_value = ttest_ind(pft_healthy, pft_non_healthy)
+            test_results['PFT']['Healthy vs Non-Healthy'] = {
+                'f_statistic': t_stat,
+                'p_value': p_value,
+                'significant': p_value < 0.05
+            }
+    else:
+        # Fallback to t-test if demographics not available
+        pft_healthy = pft_data[pft_data['health_status'] == 'Healthy']['pause_mean'].dropna()
+        pft_non_healthy = pft_data[pft_data['health_status'] == 'Non-Healthy']['pause_mean'].dropna()
+        t_stat, p_value = ttest_ind(pft_healthy, pft_non_healthy)
+        test_results['PFT']['Healthy vs Non-Healthy'] = {
+            'f_statistic': t_stat,
+            'p_value': p_value,
+            'significant': p_value < 0.05
+        }
+    
+    # SFT ANCOVA
+    sft_subset = sft_data.dropna(subset=['pause_mean', 'age', 'gender']).copy()
+    
+    if len(sft_subset) > 0 and 'gender' in sft_subset.columns:
+        sft_subset['gender_encoded'] = (sft_subset['gender'] == 'M').astype(int)
+        sft_subset['group'] = (sft_subset['health_status'] == 'Non-Healthy').astype(int)
+        
+        try:
+            model = ols('pause_mean ~ group + age + gender_encoded', data=sft_subset).fit()
+            anova_table = anova_lm(model, typ=2)
+            p_value = anova_table.loc['group', 'PR(>F)']
+            f_stat = anova_table.loc['group', 'F']
+            
+            test_results['SFT']['Healthy vs Non-Healthy'] = {
+                'f_statistic': f_stat,
+                'p_value': p_value,
+                'significant': p_value < 0.05
+            }
+        except Exception as e:
+            # Fallback to t-test if ANCOVA fails
+            sft_healthy = sft_data[sft_data['health_status'] == 'Healthy']['pause_mean'].dropna()
+            sft_non_healthy = sft_data[sft_data['health_status'] == 'Non-Healthy']['pause_mean'].dropna()
+            t_stat, p_value = ttest_ind(sft_healthy, sft_non_healthy)
+            test_results['SFT']['Healthy vs Non-Healthy'] = {
+                'f_statistic': t_stat,
+                'p_value': p_value,
+                'significant': p_value < 0.05
+            }
+    else:
+        # Fallback to t-test if demographics not available
+        sft_healthy = sft_data[sft_data['health_status'] == 'Healthy']['pause_mean'].dropna()
+        sft_non_healthy = sft_data[sft_data['health_status'] == 'Non-Healthy']['pause_mean'].dropna()
+        t_stat, p_value = ttest_ind(sft_healthy, sft_non_healthy)
+        test_results['SFT']['Healthy vs Non-Healthy'] = {
+            'f_statistic': t_stat,
+            'p_value': p_value,
+            'significant': p_value < 0.05
+        }
+    
+    return test_results
