@@ -414,24 +414,39 @@ def perform_3class_ancova(pft_data: pd.DataFrame, sft_data: pd.DataFrame) -> dic
             try:
                 model = ols('pause_mean ~ group + age + gender_encoded', data=pft_subset).fit()
                 anova_table = anova_lm(model, typ=2)
-                p_value = anova_table.loc['group', 'PR(>F)']
-                f_stat = anova_table.loc['group', 'F']
-                
-                test_results['PFT'][f'{group1} vs {group2}'] = {
-                    'f_statistic': f_stat,
-                    'p_value': p_value,
-                    'significant': p_value < 0.05
-                }
+                # Check if 'group' is in the anova table
+                if 'group' in anova_table.index:
+                    p_value = anova_table.loc['group', 'PR(>F)']
+                    f_stat = anova_table.loc['group', 'F']
+                    # Check for valid values
+                    if pd.notna(p_value) and pd.notna(f_stat):
+                        test_results['PFT'][f'{group1} vs {group2}'] = {
+                            'f_statistic': float(f_stat),
+                            'p_value': float(p_value),
+                            'significant': float(p_value) < 0.05
+                        }
+                    else:
+                        raise ValueError("Invalid p-value or F-statistic from ANCOVA")
+                else:
+                    raise ValueError("'group' not found in ANCOVA table")
             except Exception as e:
                 # Fallback to t-test if ANCOVA fails
                 pft1 = pft_subset[pft_subset['diagnosis'] == group1]['pause_mean'].dropna()
                 pft2 = pft_subset[pft_subset['diagnosis'] == group2]['pause_mean'].dropna()
-                t_stat, p_value = ttest_ind(pft1, pft2)
-                test_results['PFT'][f'{group1} vs {group2}'] = {
-                    'f_statistic': t_stat,
-                    'p_value': p_value,
-                    'significant': p_value < 0.05
-                }
+                if len(pft1) > 0 and len(pft2) > 0:
+                    t_stat, p_value = ttest_ind(pft1, pft2)
+                    test_results['PFT'][f'{group1} vs {group2}'] = {
+                        'f_statistic': float(t_stat),
+                        'p_value': float(p_value),
+                        'significant': float(p_value) < 0.05
+                    }
+                else:
+                    # If no data, create a placeholder
+                    test_results['PFT'][f'{group1} vs {group2}'] = {
+                        'f_statistic': float('nan'),
+                        'p_value': float('nan'),
+                        'significant': False
+                    }
         else:
             # Fallback to t-test if demographics not available
             pft1 = pft_data[pft_data['diagnosis'] == group1]['pause_mean'].dropna()
@@ -454,24 +469,39 @@ def perform_3class_ancova(pft_data: pd.DataFrame, sft_data: pd.DataFrame) -> dic
             try:
                 model = ols('pause_mean ~ group + age + gender_encoded', data=sft_subset).fit()
                 anova_table = anova_lm(model, typ=2)
-                p_value = anova_table.loc['group', 'PR(>F)']
-                f_stat = anova_table.loc['group', 'F']
-                
-                test_results['SFT'][f'{group1} vs {group2}'] = {
-                    'f_statistic': f_stat,
-                    'p_value': p_value,
-                    'significant': p_value < 0.05
-                }
+                # Check if 'group' is in the anova table
+                if 'group' in anova_table.index:
+                    p_value = anova_table.loc['group', 'PR(>F)']
+                    f_stat = anova_table.loc['group', 'F']
+                    # Check for valid values
+                    if pd.notna(p_value) and pd.notna(f_stat):
+                        test_results['SFT'][f'{group1} vs {group2}'] = {
+                            'f_statistic': float(f_stat),
+                            'p_value': float(p_value),
+                            'significant': float(p_value) < 0.05
+                        }
+                    else:
+                        raise ValueError("Invalid p-value or F-statistic from ANCOVA")
+                else:
+                    raise ValueError("'group' not found in ANCOVA table")
             except Exception as e:
                 # Fallback to t-test if ANCOVA fails
                 sft1 = sft_subset[sft_subset['diagnosis'] == group1]['pause_mean'].dropna()
                 sft2 = sft_subset[sft_subset['diagnosis'] == group2]['pause_mean'].dropna()
-                t_stat, p_value = ttest_ind(sft1, sft2)
-                test_results['SFT'][f'{group1} vs {group2}'] = {
-                    'f_statistic': t_stat,
-                    'p_value': p_value,
-                    'significant': p_value < 0.05
-                }
+                if len(sft1) > 0 and len(sft2) > 0:
+                    t_stat, p_value = ttest_ind(sft1, sft2)
+                    test_results['SFT'][f'{group1} vs {group2}'] = {
+                        'f_statistic': float(t_stat),
+                        'p_value': float(p_value),
+                        'significant': float(p_value) < 0.05
+                    }
+                else:
+                    # If no data, create a placeholder
+                    test_results['SFT'][f'{group1} vs {group2}'] = {
+                        'f_statistic': float('nan'),
+                        'p_value': float('nan'),
+                        'significant': False
+                    }
         else:
             # Fallback to t-test if demographics not available
             sft1 = sft_data[sft_data['diagnosis'] == group1]['pause_mean'].dropna()

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import warnings
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +29,55 @@ from sklearn.preprocessing import StandardScaler
 
 from dataloader import TranscriptLoader
 from pause_analyzer import compute_pauses, load_transcript, summarize
+
+
+def compute_repeated_words_metrics(transcript_path: Path) -> dict[str, float]:
+    """
+    Compute repeated words metrics for a transcript.
+    
+    A word is considered repeated if it appears more than once in the transcript.
+    This function computes:
+    - repeated_words_count: Total number of word occurrences that are repetitions
+      (i.e., if a word appears 3 times, it contributes 2 to the count)
+    - repeated_words_std: Standard deviation of word frequencies, measuring
+      variability in word repetition patterns
+    
+    Args:
+        transcript_path: Path to the transcript .txt file
+        
+    Returns:
+        Dictionary with 'repeated_words_count' and 'repeated_words_std'
+    """
+    try:
+        utterances = load_transcript(transcript_path)
+        # Extract all tokens (words) and normalize to lowercase
+        words = [utterance.token.lower().strip() for utterance in utterances if utterance.token.strip()]
+        
+        if not words:
+            return {'repeated_words_count': 0, 'repeated_words_std': 0.0}
+        
+        # Count word frequencies
+        word_counts = Counter(words)
+        
+        # Count total occurrences of words that appear more than once
+        repeated_count = sum(count - 1 for count in word_counts.values() if count > 1)
+        
+        # Compute standard deviation of word frequencies
+        # This measures variability in repetition patterns
+        import statistics
+        frequencies = list(word_counts.values())
+        if len(frequencies) > 1:
+            freq_std = statistics.stdev(frequencies)
+        else:
+            freq_std = 0.0
+        
+        return {
+            'repeated_words_count': repeated_count,
+            'repeated_words_std': freq_std
+        }
+    except Exception as e:
+        print(f"Warning: Could not compute repeated words for {transcript_path}: {e}")
+        return {'repeated_words_count': 0, 'repeated_words_std': 0.0}
 
 
 def get_classifier(classifier_name: str) -> Pipeline:
@@ -129,6 +179,9 @@ def build_feature_dataset(
         # Compute pause metrics
         metrics = compute_pause_metrics_for_recording(transcript_path)
         if metrics is not None:
+            # Add repeated words metrics as features
+            repeated_words_metrics = compute_repeated_words_metrics(transcript_path)
+            metrics.update(repeated_words_metrics)
             recordings_data[recording_name][task] = metrics
     
     # Build feature rows
@@ -142,6 +195,10 @@ def build_feature_dataset(
             for key, value in sft_metrics.items():
                 if key.startswith('pause_'):
                     row[f'sft_{key}'] = value
+                elif key == 'repeated_words_count':
+                    row['sft_repeated_words_count'] = value
+                elif key == 'repeated_words_std':
+                    row['sft_repeated_words_std'] = value
         else:
             # Skip recordings without SFT
             continue
@@ -153,11 +210,17 @@ def build_feature_dataset(
                 for key, value in pft_metrics.items():
                     if key.startswith('pause_'):
                         row[f'pft_{key}'] = value
+                    elif key == 'repeated_words_count':
+                        row['pft_repeated_words_count'] = value
+                    elif key == 'repeated_words_std':
+                        row['pft_repeated_words_std'] = value
             else:
                 # Fill missing PFT with zeros
                 for key in sft_metrics.keys():
                     if key.startswith('pause_'):
                         row[f'pft_{key}'] = 0.0
+                row['pft_repeated_words_count'] = 0
+                row['pft_repeated_words_std'] = 0.0
         
         rows.append(row)
     
