@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -14,6 +15,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
+    balanced_accuracy_score,
     classification_report,
     confusion_matrix,
     f1_score,
@@ -21,7 +23,7 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import StratifiedKFold, cross_validate
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -55,6 +57,83 @@ def get_classifier(classifier_name: str) -> Pipeline:
         )
     
     return Pipeline([('scaler', scaler), ('classifier', clf)])
+
+
+def tune_hyperparameters(
+    X: pd.DataFrame,
+    y: pd.Series,
+    classifier_name: str,
+    cv_folds: int = 5,
+) -> tuple[Pipeline, dict]:
+    """
+    Tune hyperparameters using GridSearchCV.
+    
+    Args:
+        X: Feature matrix
+        y: Target labels
+        classifier_name: Name of the classifier ('logistic' or 'random_forest')
+        cv_folds: Number of folds for cross-validation in GridSearchCV
+        
+    Returns:
+        Tuple of (best_estimator, best_params)
+    """
+    scaler = StandardScaler()
+    cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+    
+    if classifier_name == 'logistic':
+        base_clf = LogisticRegression(random_state=42, max_iter=1000)
+        # Adjust solver based on penalty
+        # liblinear works with both l1 and l2, lbfgs only with l2
+        param_grid_list = [
+            {
+                'classifier__C': [0.001, 0.01, 0.1, 1, 10, 100],
+                'classifier__penalty': ['l1'],
+                'classifier__solver': ['liblinear'],
+            },
+            {
+                'classifier__C': [0.001, 0.01, 0.1, 1, 10, 100],
+                'classifier__penalty': ['l2'],
+                'classifier__solver': ['liblinear', 'lbfgs'],
+            },
+        ]
+    elif classifier_name == 'random_forest':
+        base_clf = RandomForestClassifier(random_state=42)
+        param_grid_list = [{
+            'classifier__n_estimators': [50, 100, 200],
+            'classifier__max_depth': [5, 10, 20, None],
+            'classifier__min_samples_split': [2, 5, 10],
+        }]
+    else:
+        raise ValueError(
+            f"Unknown classifier: {classifier_name}. "
+            "Supported classifiers: 'logistic', 'random_forest'"
+        )
+    
+    pipeline = Pipeline([('scaler', scaler), ('classifier', base_clf)])
+    
+    # Use balanced_accuracy as the scoring metric for GridSearchCV
+    grid_search = GridSearchCV(
+        pipeline,
+        param_grid_list,
+        cv=cv,
+        scoring='balanced_accuracy',
+        n_jobs=-1,
+        verbose=1,
+    )
+    
+    print(f"\nTuning hyperparameters for {classifier_name}...")
+    print(f"GridSearchCV with {cv_folds}-fold cross-validation...")
+    grid_search.fit(X, y)
+    
+    best_params = grid_search.best_params_
+    best_score = grid_search.best_score_
+    
+    print(f"\nBest cross-validation score (balanced_accuracy): {best_score:.4f}")
+    print("Best hyperparameters:")
+    for param, value in best_params.items():
+        print(f"  {param}: {value}")
+    
+    return grid_search.best_estimator_, best_params
 
 
 def compute_pause_metrics_for_recording(
@@ -219,6 +298,7 @@ def evaluate_with_cv(
     
     scoring = {
         'accuracy': 'accuracy',
+        'balanced_accuracy': 'balanced_accuracy',
         'precision': 'precision',
         'recall': 'recall',
         'f1': 'f1',
@@ -252,11 +332,11 @@ def print_cv_results(results: dict[str, float]) -> None:
     print("K-FOLD CROSS-VALIDATION RESULTS")
     print("=" * 80)
     
-    metrics = ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']
+    metrics = ['accuracy', 'balanced_accuracy', 'precision', 'recall', 'f1', 'roc_auc']
     for metric in metrics:
         mean = results[f'{metric}_mean']
         std = results[f'{metric}_std']
-        print(f"{metric.capitalize():12s}: {mean:.4f} ± {std:.4f}")
+        print(f"{metric.replace('_', ' ').title():20s}: {mean:.4f} ± {std:.4f}")
     
     print("=" * 80 + "\n")
 
@@ -290,6 +370,17 @@ def main() -> None:
         type=int,
         default=5,
         help='Number of folds for cross-validation (default: 5)',
+    )
+    parser.add_argument(
+        '--tune-hyperparameters',
+        action='store_true',
+        help='Enable GridSearchCV for hyperparameter tuning',
+    )
+    parser.add_argument(
+        '--cv-folds',
+        type=int,
+        default=5,
+        help='Number of folds for GridSearchCV (default: 5)',
     )
     parser.add_argument(
         '--include-pft',
@@ -357,7 +448,23 @@ def main() -> None:
     
     # Get classifier
     print(f"\nUsing classifier: {args.classifier}")
-    classifier = get_classifier(args.classifier)
+    
+    # Tune hyperparameters if requested
+    best_params = None
+    if args.tune_hyperparameters:
+        classifier, best_params = tune_hyperparameters(
+            X, y, args.classifier, cv_folds=args.cv_folds
+        )
+        
+        # Save best hyperparameters to JSON
+        if best_params:
+            args.output_dir.mkdir(parents=True, exist_ok=True)
+            hyperparams_file = args.output_dir / f'best_hyperparameters_{args.classifier}.json'
+            with open(hyperparams_file, 'w') as f:
+                json.dump(best_params, f, indent=2)
+            print(f"\nBest hyperparameters saved to: {hyperparams_file}")
+    else:
+        classifier = get_classifier(args.classifier)
     
     # Perform cross-validation
     print(f"\nPerforming {args.k_folds}-fold cross-validation...")
