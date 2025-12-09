@@ -162,7 +162,6 @@ def build_feature_dataset(
     data_dir: Path,
     metadata_path: Optional[Path],
     include_pft: bool = False,
-    include_demographics: bool = False,
 ) -> pd.DataFrame:
     """
     Build a feature dataset with pause metrics per recording.
@@ -171,12 +170,10 @@ def build_feature_dataset(
         data_dir: Directory containing transcript files
         metadata_path: Path to metadata CSV file
         include_pft: Whether to include PFT features in addition to SFT
-        include_demographics: Whether to include age and gender as features
         
     Returns:
         DataFrame with one row per recording, columns: recording, diagnosis, 
-        and pause feature columns (prefixed with 'sft_' and optionally 'pft_'),
-        and optionally 'age' and 'gender_encoded' if include_demographics is True
+        and pause feature columns (prefixed with 'sft_' and optionally 'pft_')
     """
     loader = TranscriptLoader(data_dir=data_dir, metadata_path=metadata_path)
     metadata = loader.load_metadata()
@@ -234,13 +231,9 @@ def build_feature_dataset(
     
     features_df = pd.DataFrame(rows)
     
-    # Merge with metadata to get diagnosis and optionally demographics
-    merge_cols = ['recording', 'diagnosis']
-    if include_demographics:
-        merge_cols.extend(['age', 'gender'])
-    
+    # Merge with metadata to get diagnosis
     features_df = features_df.merge(
-        metadata[merge_cols],
+        metadata[['recording', 'diagnosis']],
         on='recording',
         how='left',
     )
@@ -252,25 +245,6 @@ def build_feature_dataset(
     
     # Create binary labels: 0 = HC, 1 = Dementia
     features_df['label'] = (features_df['diagnosis'] == 'DEMENTIA').astype(int)
-    
-    # Encode gender if demographics are included
-    if include_demographics:
-        # Normalize gender values (handle case variations)
-        features_df['gender'] = features_df['gender'].str.lower().str.strip()
-        # Encode gender as binary: 0 for 'male', 1 for 'female' (or other)
-        # Map common gender values
-        gender_mapping = {
-            'male': 0,
-            'm': 0,
-            'female': 1,
-            'f': 1,
-        }
-        features_df['gender_encoded'] = features_df['gender'].map(gender_mapping)
-        # Fill any unmapped values with the mode or 0.5 (neutral)
-        if features_df['gender_encoded'].isna().any():
-            mode_value = features_df['gender_encoded'].mode()
-            fill_value = mode_value[0] if len(mode_value) > 0 else 0.5
-            features_df['gender_encoded'] = features_df['gender_encoded'].fillna(fill_value)
     
     return features_df
 
@@ -388,11 +362,6 @@ def main() -> None:
         help='Include PFT pause features in addition to SFT',
     )
     parser.add_argument(
-        '--include-demographics',
-        action='store_true',
-        help='Include age and gender as features',
-    )
-    parser.add_argument(
         '--output-dir',
         type=Path,
         default=Path('output'),
@@ -406,7 +375,6 @@ def main() -> None:
         data_dir=args.data_dir,
         metadata_path=args.metadata,
         include_pft=args.include_pft,
-        include_demographics=args.include_demographics,
     )
     
     print(f"Loaded {len(features_df)} recordings")
@@ -417,13 +385,6 @@ def main() -> None:
     feature_cols = [col for col in features_df.columns 
                    if col.startswith('sft_') or col.startswith('pft_')]
     
-    # Add demographic features if enabled
-    if args.include_demographics:
-        if 'age' in features_df.columns:
-            feature_cols.append('age')
-        if 'gender_encoded' in features_df.columns:
-            feature_cols.append('gender_encoded')
-    
     X = features_df[feature_cols]
     y = features_df['label']
     
@@ -433,17 +394,7 @@ def main() -> None:
     
     # Handle any missing values
     if X.isna().any().any():
-        print("\nWarning: Found missing values in features.")
-        # For age, fill with median; for other features, fill with 0
-        if 'age' in X.columns:
-            age_median = X['age'].median()
-            if pd.notna(age_median):
-                X['age'] = X['age'].fillna(age_median)
-                print(f"  - Filled missing age values with median: {age_median:.1f}")
-            else:
-                X['age'] = X['age'].fillna(0)
-                print("  - Filled missing age values with 0 (no median available)")
-        # Fill remaining missing values with 0
+        print("\nWarning: Found missing values in features. Filling with 0.")
         X = X.fillna(0)
     
     # Get classifier
