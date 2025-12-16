@@ -381,15 +381,20 @@ def plot_confusion_matrix(
         cmap='Blues',
         xticklabels=class_names,
         yticklabels=class_names,
+        annot_kws={'fontsize': 16, 'fontweight': 'bold'},
         cbar_kws={'label': 'Count'},
         ax=ax
     )
     
-    ax.set_xlabel('Predicted Label', fontsize=12, fontweight='bold')
-    ax.set_ylabel('True Label', fontsize=12, fontweight='bold')
+    # Increase tick label font sizes
+    ax.set_xticklabels(ax.get_xticklabels(), fontsize=16, fontweight='bold')
+    ax.set_yticklabels(ax.get_yticklabels(), fontsize=16, fontweight='bold')
+    
+    ax.set_xlabel('Predicted Label', fontsize=18, fontweight='bold')
+    ax.set_ylabel('True Label', fontsize=18, fontweight='bold')
     ax.set_title(
         'Confusion Matrix: 3-Class Classification\n(HC vs MCI vs Dementia)',
-        fontsize=14,
+        fontsize=20,
         fontweight='bold',
         pad=20
     )
@@ -403,9 +408,15 @@ def plot_confusion_matrix(
         f'Overall Accuracy: {accuracy*100:.2f}% ({correct}/{total})',
         transform=ax.transAxes,
         ha='center',
-        fontsize=11,
+        fontsize=16,
+        fontweight='bold',
         bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5)
     )
+    
+    # Increase colorbar label font size
+    cbar = ax.collections[0].colorbar
+    cbar.set_label('Count', fontsize=16, fontweight='bold')
+    cbar.ax.tick_params(labelsize=14)
     
     plt.tight_layout()
     
