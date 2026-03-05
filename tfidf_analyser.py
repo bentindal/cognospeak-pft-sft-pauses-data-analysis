@@ -34,6 +34,12 @@ feature_names = vectorizer.get_feature_names_out()
 tfidf_scores = np.asarray(X.mean(axis=0)).flatten()
 sorted_indices = tfidf_scores.argsort()[::-1]
 
-top_n = 20
-for i in sorted_indices[:top_n]:
+n_limit = 20
+print("==================Top 20==================")
+for i in sorted_indices[:n_limit]:
+    print(f"{feature_names[i]}: {tfidf_scores[i]:.4f}")
+
+#bottom 20 
+print("==================Bottom 20==================")
+for i in sorted_indices[-n_limit:]:
     print(f"{feature_names[i]}: {tfidf_scores[i]:.4f}")
