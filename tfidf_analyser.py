@@ -11,20 +11,29 @@ This helps identify:
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 import dataloader
+import numpy as np
 
 loader = dataloader.TranscriptLoader()
 transcript_paths = loader.discover_transcript_files()
 
-frames = loader.load_all_transcripts(transcript_paths)
+frames_dict = loader.load_all_transcripts(transcript_paths)
 
-corpus = [
-    'This is the first document.',
-    'This document is the second document.',
-    'And this is the third one.',
-    'Is this the first document?',
-]
+frames = frames_dict.values()
+
+corpus = []
+for df in frames_dict.values():
+    # Join all tokens in this DataFrame into a single string
+    text = ' '.join(df['token'].astype(str).tolist())
+    corpus.append(text)
+
+print(corpus)
 vectorizer = TfidfVectorizer()
 X = vectorizer.fit_transform(corpus)
-vectorizer.get_feature_names_out()
-print(X.shape)
-print(X)
+
+feature_names = vectorizer.get_feature_names_out()
+tfidf_scores = np.asarray(X.mean(axis=0)).flatten()
+sorted_indices = tfidf_scores.argsort()[::-1]
+
+top_n = 20
+for i in sorted_indices[:top_n]:
+    print(f"{feature_names[i]}: {tfidf_scores[i]:.4f}")
