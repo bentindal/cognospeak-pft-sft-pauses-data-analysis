@@ -10,6 +10,7 @@ This helps identify:
 """
 
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.utils.sparsefuncs import mean_variance_axis
 import dataloader
 import numpy as np
 
@@ -17,29 +18,44 @@ loader = dataloader.TranscriptLoader()
 transcript_paths = loader.discover_transcript_files()
 
 frames_dict = loader.load_all_transcripts(transcript_paths)
+metadata = loader.load_metadata()
 
-# Separate transcripts by task type (SFT and PFT)
-sft_frames = {}
-pft_frames = {}
+# Map each recording ID to diagnosis class (DEMENTIA, MCI, HC)
+diagnosis_by_recording = {
+    row['recording']: row['diagnosis']
+    for _, row in metadata[['recording', 'diagnosis']].dropna().iterrows()
+}
+
+# Separate transcripts by task and diagnosis class
+TARGET_TASKS = ('SFT', 'PFT')
+TARGET_DIAGNOSES = ('DEMENTIA', 'MCI', 'HC')
+
+task_diagnosis_frames = {
+    task: {diagnosis: {} for diagnosis in TARGET_DIAGNOSES}
+    for task in TARGET_TASKS
+}
 
 for stem, df in frames_dict.items():
+    if len(df) == 0:
+        continue
+
     if 'task' in df.columns:
-        task = df['task'].iloc[0] if len(df) > 0 else 'UNKNOWN'
-        if task == 'SFT':
-            sft_frames[stem] = df
-        elif task == 'PFT':
-            pft_frames[stem] = df
+        task = str(df['task'].iloc[0]).upper()
     else:
         # Fallback: infer from stem if task column not available
-        if 'SFT' in stem.upper():
-            sft_frames[stem] = df
-        elif 'PFT' in stem.upper():
-            pft_frames[stem] = df
+        task = 'SFT' if 'SFT' in stem.upper() else 'PFT' if 'PFT' in stem.upper() else 'UNKNOWN'
 
-print(f"Loaded {len(sft_frames)} SFT transcripts")
-print(f"Loaded {len(pft_frames)} PFT transcripts")
+    recording = str(df['recording'].iloc[0]) if 'recording' in df.columns else None
+    diagnosis = diagnosis_by_recording.get(recording, 'UNKNOWN')
 
-frames = frames_dict.values()
+    if task in TARGET_TASKS and diagnosis in TARGET_DIAGNOSES:
+        task_diagnosis_frames[task][diagnosis][stem] = df
+
+for task in TARGET_TASKS:
+    total_task = sum(len(task_diagnosis_frames[task][diag]) for diag in TARGET_DIAGNOSES)
+    print(f"Loaded {total_task} {task} transcripts")
+    for diagnosis in TARGET_DIAGNOSES:
+        print(f"  {diagnosis}: {len(task_diagnosis_frames[task][diagnosis])}")
 
 def build_corpus(dataframes):
     corpus = []
@@ -49,42 +65,29 @@ def build_corpus(dataframes):
         corpus.append(text)
     return corpus
 
-# Build corpus for SFT transcripts
-sft_corpus = build_corpus(sft_frames.values())
-print(f"\nSFT corpus built with {len(sft_corpus)} documents")
+N_LIMIT = 20
 
-# Build corpus for PFT transcripts
-pft_corpus = build_corpus(pft_frames.values())
-print(f"PFT corpus built with {len(pft_corpus)} documents")
+for task in TARGET_TASKS:
+    print("\n" + "=" * 50)
+    print(f"{task} Analysis by Diagnosis")
+    print("=" * 50)
 
-# Analyze SFT
-print("\n" + "="*50)
-print("SFT Analysis")
-print("="*50)
-if sft_corpus:
-    sft_vectorizer = TfidfVectorizer()
-    sft_X = sft_vectorizer.fit_transform(sft_corpus)
-    sft_feature_names = sft_vectorizer.get_feature_names_out()
-    sft_tfidf_scores = np.asarray(sft_X.mean(axis=0)).flatten()
-    sft_sorted_indices = sft_tfidf_scores.argsort()[::-1]
-    
-    n_limit = 20
-    print("Top 20 terms:")
-    for i in sft_sorted_indices[:n_limit]:
-        print(f"  {sft_feature_names[i]}: {sft_tfidf_scores[i]:.4f}")
+    for diagnosis in TARGET_DIAGNOSES:
+        diagnosis_frames = task_diagnosis_frames[task][diagnosis]
+        corpus = build_corpus(diagnosis_frames.values())
 
-# Analyze PFT
-print("\n" + "="*50)
-print("PFT Analysis")
-print("="*50)
-if pft_corpus:
-    pft_vectorizer = TfidfVectorizer()
-    pft_X = pft_vectorizer.fit_transform(pft_corpus)
-    pft_feature_names = pft_vectorizer.get_feature_names_out()
-    pft_tfidf_scores = np.asarray(pft_X.mean(axis=0)).flatten()
-    pft_sorted_indices = pft_tfidf_scores.argsort()[::-1]
-    
-    n_limit = 20
-    print("Top 20 terms:")
-    for i in pft_sorted_indices[:n_limit]:
-        print(f"  {pft_feature_names[i]}: {pft_tfidf_scores[i]:.4f}")
+        print(f"\n[{task} | {diagnosis}] documents: {len(corpus)}")
+        if not corpus:
+            print("  No documents available")
+            continue
+
+        vectorizer = TfidfVectorizer()
+        X = vectorizer.fit_transform(corpus)
+        feature_names = vectorizer.get_feature_names_out()
+        tfidf_stats = mean_variance_axis(X, axis=0)
+        tfidf_scores = tfidf_stats[0]
+        sorted_indices = tfidf_scores.argsort()[::-1]
+
+        print(f"  Top {N_LIMIT} terms:")
+        for i in sorted_indices[:N_LIMIT]:
+            print(f"    {feature_names[i]}: {tfidf_scores[i]:.4f}")
