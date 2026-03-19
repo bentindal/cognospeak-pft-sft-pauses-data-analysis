@@ -245,8 +245,7 @@ class TCN(nn.Module):
         # return out
         feats = self.network(inputs)          # (B, C, T)
 
-    # feats = feats[:, :, self.Receptive_F:]  # <-- remove / keep commented
-
+    # feats = feats[:, :, self.Receptive_F:]  
         tokens = feats.transpose(1, 2)        # (B, T, C)
         tokens = self.proj(tokens)            # (B, T, D)
         return tokens
