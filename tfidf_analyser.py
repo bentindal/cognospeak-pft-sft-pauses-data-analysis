@@ -16,6 +16,7 @@ from sklearn.metrics import classification_report, confusion_matrix, accuracy_sc
 from sklearn.utils.sparsefuncs import mean_variance_axis
 from sklearn.pipeline import Pipeline
 from sklearn.svm import LinearSVC
+from sklearn.metrics import confusion_matrix
 import dataloader
 import numpy as np
 import re
@@ -25,6 +26,7 @@ import matplotlib.pyplot as plt
 N_LIMIT = 20
 RANDOM_SEED = 42
 K_FOLDS = 5
+MIN_TOKENS = 2
 
 loader = dataloader.TranscriptLoader()
 transcript_paths = loader.discover_transcript_files()
@@ -72,9 +74,21 @@ for stem, df in frames_dict.items():
         task_diagnosis_frames[task][diagnosis][stem] = df
 
 
-def build_corpus(dataframes):
+def build_corpus(dataframes, min_tokens=MIN_TOKENS):
     corpus = []
+    skipped = 0
     for df in dataframes:
+        tokens = [
+            t.strip() 
+            for t in df['token'].astype(str).tolist() 
+            if t.strip()
+        ]
+
+        if len(tokens) < min_tokens:
+            skipped += 1
+            print("SKIPPING:", tokens)
+            continue
+
         # Join all tokens in this DataFrame into a single string
         text = ' '.join(df['token'].astype(str).tolist())
         corpus.append(text)
@@ -137,28 +151,40 @@ def build_pipeline():
         ('clf', LinearSVC())
     ])
 
-def build_dataset(task_diagnosis_frames, tasks, diagnoses):
+def build_dataset(task_diagnosis_frames, tasks, diagnoses, min_tokens=2):
     X, y, groups = [], [], []
 
+    skipped = 0 
     for task in tasks:
         for diagnosis in diagnoses:
             frames = task_diagnosis_frames[task][diagnosis]
 
             for stem, df in frames.items():
-                text = ' '.join(df['token'].astype(str).tolist())
+                tokens = [
+                    t.strip() 
+                    for t in df['token'].astype(str).tolist() 
+                    if t.strip()
+                ]
+
+                if len(tokens) < min_tokens:
+                    skipped += 1
+                    print("SKIPPING:", tokens)
+                    continue
+
+                text = ' '.join(tokens)
 
                 X.append(text)
                 y.append(diagnosis)
-                groups.append(task)
 
+    print(f"Skipped {skipped} short transcripts")
     return X, y, groups
 
-def run_cv_experiment(X, y, k=K_FOLDS, random_seed=RANDOM_SEED):
-    skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=RANDOM_SEED)
-
+def run_cv_experiment_with_cm(X, y, k=5):
+    skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
     pipeline = build_pipeline()
 
     metrics = []
+    conf_matrices = []
 
     for fold, (train_idx, test_idx) in enumerate(skf.split(X, y), 1):
         X_train = [X[i] for i in train_idx]
@@ -174,12 +200,53 @@ def run_cv_experiment(X, y, k=K_FOLDS, random_seed=RANDOM_SEED):
             y_test, y_pred, average='weighted'
         )
 
+        cm = confusion_matrix(y_test, y_pred, labels=TARGET_DIAGNOSES)
+
         metrics.append((acc, precision, recall, f1))
+        conf_matrices.append(cm)
 
-        print(f"\nFold {fold}")
-        print(f"Accuracy: {acc:.3f}, F1: {f1:.3f}")
+    return np.array(metrics), conf_matrices
 
-    return np.array(metrics)
+def run_task_experiment(task_name, task_diagnosis_frames):
+    print(f"\n===== TASK: {task_name} =====")
+
+    X, y = [], []
+
+    for diagnosis in TARGET_DIAGNOSES:
+        frames = task_diagnosis_frames[task_name][diagnosis]
+
+        for df in frames.values():
+            text = ' '.join(df['token'].astype(str).tolist())
+            X.append(text)
+            y.append(diagnosis)
+
+    metrics, conf_matrices = run_cv_experiment_with_cm(X, y)
+
+    summarise_results(metrics)
+    plot_avg_confusion_matrix(conf_matrices, TARGET_DIAGNOSES, task_name)
+
+
+def plot_avg_confusion_matrix(conf_matrices, labels, task_name):
+    avg_cm = np.mean(conf_matrices, axis=0)
+
+    plt.figure()
+    plt.imshow(avg_cm)
+    plt.title(f"Average Confusion Matrix ({task_name})")
+    plt.colorbar()
+
+    plt.xticks(range(len(labels)), labels)
+    plt.yticks(range(len(labels)), labels)
+
+    for i in range(len(labels)):
+        for j in range(len(labels)):
+            plt.text(j, i, f"{avg_cm[i, j]:.2f}",
+                     ha="center", va="center")
+
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.tight_layout()
+    plt.show()
+
 
 def summarise_results(metrics):
     mean = metrics.mean(axis=0)
@@ -194,6 +261,7 @@ def summarise_results(metrics):
 def main():
     for task in TARGET_TASKS:
         print(f"Generating visual analysis for {task}...")
+        run_task_experiment(task, task_diagnosis_frames)
         plot_tfidf_comparison(task, task_diagnosis_frames[task], N_LIMIT)
     
     X, y, groups = build_dataset(
@@ -202,7 +270,8 @@ def main():
         TARGET_DIAGNOSES
     )
 
-    metrics = run_cv_experiment(X, y, k=5)
+    metrics, conf_matrices = run_cv_experiment_with_cm(X, y)
+
     summarise_results(metrics)
 
 if __name__ == "__main__":
