@@ -10,12 +10,21 @@ This helps identify:
 """
 
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import StratifiedKFold
+from sklearn.svm import LinearSVC
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_recall_fscore_support
 from sklearn.utils.sparsefuncs import mean_variance_axis
+from sklearn.pipeline import Pipeline
+from sklearn.svm import LinearSVC
 import dataloader
 import numpy as np
 import re
 from nltk.stem.porter import PorterStemmer
 import matplotlib.pyplot as plt
+
+N_LIMIT = 20
+RANDOM_SEED = 42
+K_FOLDS = 5
 
 loader = dataloader.TranscriptLoader()
 transcript_paths = loader.discover_transcript_files()
@@ -23,7 +32,6 @@ transcript_paths = loader.discover_transcript_files()
 frames_dict = loader.load_all_transcripts(transcript_paths)
 metadata = loader.load_metadata()
 
-N_LIMIT = 20
 stemmer = PorterStemmer()
 
 def stemmed_tokenizer(text):
@@ -62,7 +70,8 @@ for stem, df in frames_dict.items():
 
     if task in TARGET_TASKS and diagnosis in TARGET_DIAGNOSES:
         task_diagnosis_frames[task][diagnosis][stem] = df
-        
+
+
 def build_corpus(dataframes):
     corpus = []
     for df in dataframes:
@@ -117,6 +126,84 @@ def plot_tfidf_comparison(task_name, task_data, n_limit=N_LIMIT):
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plt.show()
 
-for task in TARGET_TASKS:
-    print(f"Generating visual analysis for {task}...")
-    plot_tfidf_comparison(task, task_diagnosis_frames[task], N_LIMIT)
+def build_pipeline():
+    return Pipeline([
+        ('tfidf', TfidfVectorizer(
+            tokenizer=stemmed_tokenizer,
+            token_pattern=None,
+            max_features=5000,
+            ngram_range=(1, 2)
+        )),
+        ('clf', LinearSVC())
+    ])
+
+def build_dataset(task_diagnosis_frames, tasks, diagnoses):
+    X, y, groups = [], [], []
+
+    for task in tasks:
+        for diagnosis in diagnoses:
+            frames = task_diagnosis_frames[task][diagnosis]
+
+            for stem, df in frames.items():
+                text = ' '.join(df['token'].astype(str).tolist())
+
+                X.append(text)
+                y.append(diagnosis)
+                groups.append(task)
+
+    return X, y, groups
+
+def run_cv_experiment(X, y, k=K_FOLDS, random_seed=RANDOM_SEED):
+    skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=RANDOM_SEED)
+
+    pipeline = build_pipeline()
+
+    metrics = []
+
+    for fold, (train_idx, test_idx) in enumerate(skf.split(X, y), 1):
+        X_train = [X[i] for i in train_idx]
+        X_test = [X[i] for i in test_idx]
+        y_train = [y[i] for i in train_idx]
+        y_test = [y[i] for i in test_idx]
+
+        pipeline.fit(X_train, y_train)
+        y_pred = pipeline.predict(X_test)
+
+        acc = accuracy_score(y_test, y_pred)
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            y_test, y_pred, average='weighted'
+        )
+
+        metrics.append((acc, precision, recall, f1))
+
+        print(f"\nFold {fold}")
+        print(f"Accuracy: {acc:.3f}, F1: {f1:.3f}")
+
+    return np.array(metrics)
+
+def summarise_results(metrics):
+    mean = metrics.mean(axis=0)
+    std = metrics.std(axis=0)
+
+    print("\n=== Final Results ===")
+    print(f"Accuracy: {mean[0]:.3f} ± {std[0]:.3f}")
+    print(f"Precision: {mean[1]:.3f} ± {std[1]:.3f}")
+    print(f"Recall: {mean[2]:.3f} ± {std[2]:.3f}")
+    print(f"F1-score: {mean[3]:.3f} ± {std[3]:.3f}")
+
+def main():
+    for task in TARGET_TASKS:
+        print(f"Generating visual analysis for {task}...")
+        plot_tfidf_comparison(task, task_diagnosis_frames[task], N_LIMIT)
+    
+    X, y, groups = build_dataset(
+        task_diagnosis_frames,
+        TARGET_TASKS,
+        TARGET_DIAGNOSES
+    )
+
+    metrics = run_cv_experiment(X, y, k=5)
+    summarise_results(metrics)
+
+if __name__ == "__main__":
+    main()
