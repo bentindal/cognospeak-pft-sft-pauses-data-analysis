@@ -8,3 +8,4 @@ statsmodels>=0.14.6
 pyarrow>=23.0.1
 fastparquet>=2025.12.0
 tensorflow>=2.20.0
+nltk>=3.9.3
