@@ -5,6 +5,10 @@ from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from sklearn.decomposition import PCA
 from dataloader import TranscriptLoader
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
 
 def generate_diagnosis_embeddings(data_dir='data'):
     loader = TranscriptLoader(data_dir=Path(data_dir))
@@ -17,48 +21,49 @@ def generate_diagnosis_embeddings(data_dir='data'):
     for path in transcript_paths:
         df = loader.load_transcript(path)
         
-        # FIX: Extract only the base ID (e.g., 'Process-rec-097') 
-        # This removes the '__PFT' or '__SFT' suffix to match your CSV
+        # Extract base ID to match CSV
         recording_id = path.stem.split('__')[0].strip()
         df['recording'] = recording_id 
         
-        # Merge using your existing dataloader logic
         merged_df = loader.merge_with_metadata(df)
-        
         if merged_df.empty:
             continue
             
-        # Clean and standardize diagnosis labels from your CSV
         raw_diag = str(merged_df['diagnosis'].iloc[0]).strip().upper()
         if 'DEMENTIA' in raw_diag: diagnosis = 'Dementia'
         elif 'MCI' in raw_diag: diagnosis = 'MCI'
         elif 'HC' in raw_diag: diagnosis = 'HC'
         else: continue
 
-        tokens = df['token'].dropna().astype(str).str.lower().tolist()
+        # Filter out empty tokens
+        df = df.dropna(subset=['token'])
+        tokens = df['token'].astype(str).str.lower().tolist()
         if not tokens: continue
             
+        # Extract timing data
+        start_times = df['start_time'].tolist()
+        end_times = df['end_time'].tolist()
+        
         embeddings = model.encode(tokens)
         task_type = loader.infer_task_from_filename(path.name)
         
-        for token, emb in zip(tokens, embeddings):
+        # FIX: Save start_time and end_time for the classifier to use later
+        for i in range(len(tokens)):
             all_data.append({
                 'recording': recording_id,
                 'task': task_type,
-                'token': token,
+                'token': tokens[i],
+                'start_time': start_times[i], # Needed for pause calculation
+                'end_time': end_times[i],     # Needed for pause calculation
                 'diagnosis': diagnosis, 
-                'embedding': emb
+                'embedding': embeddings[i]
             })
 
-    # Return valid DataFrame or structure with columns to avoid KeyErrors
-    if not all_data:
-        return pd.DataFrame(columns=['recording', 'task', 'token', 'diagnosis', 'embedding'])
-        
     return pd.DataFrame(all_data)
 
 def visualise_by_diagnosis(df, task_filter='SFT'):
     """
-    Visualizes the semantic space. 
+    Visualises the semantic space. 
     Shows word labels ONLY if a single recording is being analyzed.
     """
     subset = df[df['task'] == task_filter].copy()
@@ -176,6 +181,82 @@ def generate_single_file_embeddings(file_number, data_dir='data'):
 
     return pd.DataFrame(all_data)
 
+def train_fusion_svm_classifier(df):
+    """
+    Implements Early Fusion: Concatenates SFT and PFT features into a single 
+    vector to train a Support Vector Machine (SVM).
+    """
+    recordings = df['recording'].unique()
+    fused_patient_data = []
+
+    print(f"Performing Early Fusion for {len(recordings)} participants...")
+
+    for rid in recordings:
+        # Isolate tasks for this specific participant
+        patient_subset = df[df['recording'] == rid]
+        sft_sub = patient_subset[patient_subset['task'] == 'SFT'].sort_values('start_time')
+        pft_sub = patient_subset[patient_subset['task'] == 'PFT'].sort_values('start_time')
+        
+        # Only fuse if the participant has completed BOTH tasks
+        if sft_sub.empty or pft_sub.empty:
+            continue
+            
+        # 1. SFT FEATURES (Meaning + Volume + Hesitation)
+        sft_mean_emb = np.mean(np.stack(sft_sub['embedding'].values), axis=0)
+        sft_count = len(sft_sub)
+        sft_pauses = sft_sub['start_time'].shift(-1) - sft_sub['end_time']
+        sft_mean_pause = sft_pauses.dropna().mean() if not sft_pauses.dropna().empty else 0
+        
+        # 2. PFT FEATURES (Meaning + Volume + Hesitation)
+        pft_mean_emb = np.mean(np.stack(pft_sub['embedding'].values), axis=0)
+        pft_count = len(pft_sub)
+        pft_pauses = pft_sub['start_time'].shift(-1) - pft_sub['end_time']
+        pft_mean_pause = pft_pauses.dropna().mean() if not pft_pauses.dropna().empty else 0
+        
+        # THE FUSION: Glue them all together into vector X
+        # Length: 384 (SFT) + 384 (PFT) + 4 (Temporal) = 772 dimensions
+        fusion_vector = np.concatenate([
+            sft_mean_emb, 
+            pft_mean_emb, 
+            [sft_count, sft_mean_pause, pft_count, pft_mean_pause]
+        ])
+        
+        fused_patient_data.append({
+            'features': fusion_vector,
+            'diagnosis': sft_sub['diagnosis'].iloc[0]
+        })
+
+    if not fused_patient_data:
+        print("Error: No participants found with both SFT and PFT data.")
+        return None
+
+    final_df = pd.DataFrame(fused_patient_data)
+    X = np.array(final_df['features'].tolist())
+    y = np.array(final_df['diagnosis'].tolist())
+
+    # Split and Scale
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    # 3. SVM CLASSIFIER: Optimal for high-dimensional fused vectors
+    # We use a linear kernel first as it is less likely to overfit small samples
+    svm_model = SVC(kernel='linear', C=1.0, random_state=42)
+    svm_model.fit(X_train_scaled, y_train)
+
+    y_pred = svm_model.predict(X_test_scaled)
+    
+    print(f"\n=== Early Fusion SVM Results (SFT + PFT) ===")
+    print(f"Accuracy: {accuracy_score(y_test, y_pred):.2%}")
+    print(classification_report(y_test, y_pred, zero_division=0))
+
+    return svm_model
+
 if __name__ == "__main__":
-    results_df = generate_diagnosis_embeddings()
-    visualise_by_diagnosis(results_df, task_filter='SFT')
+    all_results = generate_diagnosis_embeddings()
+    fusion_model = train_fusion_svm_classifier(all_results)
+    visualise_by_diagnosis(all_results, task_filter='SFT')
