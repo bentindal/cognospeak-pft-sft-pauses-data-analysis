@@ -9,6 +9,7 @@ This helps identify:
 - Word importance for classification tasks
 """
 
+from sklearn.linear_model import LogisticRegression
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import StratifiedKFold
 from sklearn.svm import LinearSVC
@@ -17,10 +18,12 @@ from sklearn.utils.sparsefuncs import mean_variance_axis
 from sklearn.pipeline import Pipeline
 from sklearn.svm import LinearSVC
 from sklearn.metrics import confusion_matrix
+from sklearn.ensemble import RandomForestClassifier
 import dataloader
 import numpy as np
 import re
-from nltk.stem.porter import PorterStemmer
+import nltk
+from nltk.stem import WordNetLemmatizer
 import matplotlib.pyplot as plt
 
 N_LIMIT = 20
@@ -28,18 +31,21 @@ RANDOM_SEED = 42
 K_FOLDS = 5
 MIN_TOKENS = 2
 
+nltk.download('wordnet')
+nltk.download('omw-1.4')
+
+
 loader = dataloader.TranscriptLoader()
 transcript_paths = loader.discover_transcript_files()
 
 frames_dict = loader.load_all_transcripts(transcript_paths)
 metadata = loader.load_metadata()
 
-stemmer = PorterStemmer()
+lemmatizer = WordNetLemmatizer()
 
-def stemmed_tokenizer(text):
-    # Lowercase and spip install --upgrade piptem each word
+def lemma_tokenizer(text):
     tokens = re.split(r'\W+', text.lower())
-    return [stemmer.stem(w) for w in tokens if len(w) > 1]
+    return [lemmatizer.lemmatize(w) for w in tokens if len(w) > 1]
 
 
 # Map each recording ID to diagnosis class (DEMENTIA, MCI, HC)
@@ -48,7 +54,6 @@ diagnosis_by_recording = {
     for _, row in metadata[['recording', 'diagnosis']].dropna().iterrows()
 }
 
-# Separate transcripts by task and diagnosis class
 TARGET_TASKS = ('SFT', 'PFT')
 TARGET_DIAGNOSES = ('DEMENTIA', 'MCI', 'HC')
 
@@ -114,7 +119,7 @@ def plot_tfidf_comparison(task_name, task_data, n_limit=N_LIMIT):
             continue
 
         vectorizer = TfidfVectorizer(
-            tokenizer=stemmed_tokenizer,
+            tokenizer=lemma_tokenizer,
             token_pattern=None
         )
         
@@ -143,15 +148,20 @@ def plot_tfidf_comparison(task_name, task_data, n_limit=N_LIMIT):
 def build_pipeline():
     return Pipeline([
         ('tfidf', TfidfVectorizer(
-            tokenizer=stemmed_tokenizer,
+            tokenizer=lemma_tokenizer,
             token_pattern=None,
-            max_features=5000,
-            ngram_range=(1, 2)
+            max_features=80,
+            ngram_range=(1, 1),
+            # min_df=2,
+            # max_df=0.9,
+            # binary=True
         )),
-        ('clf', LinearSVC())
+        ('clf', LinearSVC(class_weight='balanced', C=0.1))
+        # ('clf', LogisticRegression(class_weight='balanced', C=1.0))
+        # ('clf', RandomForestClassifier(n_estimators=100, class_weight='balanced_subsample'))
     ])
 
-def build_dataset(task_diagnosis_frames, tasks, diagnoses, min_tokens=2):
+def build_dataset(task_diagnosis_frames, tasks, diagnoses, min_tokens=MIN_TOKENS):
     X, y, groups = [], [], []
 
     skipped = 0 
@@ -168,7 +178,6 @@ def build_dataset(task_diagnosis_frames, tasks, diagnoses, min_tokens=2):
 
                 if len(tokens) < min_tokens:
                     skipped += 1
-                    print("SKIPPING:", tokens)
                     continue
 
                 text = ' '.join(tokens)
@@ -179,8 +188,8 @@ def build_dataset(task_diagnosis_frames, tasks, diagnoses, min_tokens=2):
     print(f"Skipped {skipped} short transcripts")
     return X, y, groups
 
-def run_cv_experiment_with_cm(X, y, k=5):
-    skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
+def run_cv_experiment_with_cm(X, y, k=K_FOLDS):
+    skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=RANDOM_SEED)
     pipeline = build_pipeline()
 
     metrics = []
@@ -210,15 +219,16 @@ def run_cv_experiment_with_cm(X, y, k=5):
 def run_task_experiment(task_name, task_diagnosis_frames):
     print(f"\n===== TASK: {task_name} =====")
 
-    X, y = [], []
+    X, y, _ = build_dataset(
+        task_diagnosis_frames, 
+        tasks=[task_name], 
+        diagnoses=TARGET_DIAGNOSES,
+        min_tokens=MIN_TOKENS
+    )
 
-    for diagnosis in TARGET_DIAGNOSES:
-        frames = task_diagnosis_frames[task_name][diagnosis]
-
-        for df in frames.values():
-            text = ' '.join(df['token'].astype(str).tolist())
-            X.append(text)
-            y.append(diagnosis)
+    if not X:
+        print(f"No valid data found for task: {task_name}")
+        return
 
     metrics, conf_matrices = run_cv_experiment_with_cm(X, y)
 
@@ -263,16 +273,6 @@ def main():
         print(f"Generating visual analysis for {task}...")
         run_task_experiment(task, task_diagnosis_frames)
         plot_tfidf_comparison(task, task_diagnosis_frames[task], N_LIMIT)
-    
-    X, y, groups = build_dataset(
-        task_diagnosis_frames,
-        TARGET_TASKS,
-        TARGET_DIAGNOSES
-    )
-
-    metrics, conf_matrices = run_cv_experiment_with_cm(X, y)
-
-    summarise_results(metrics)
 
 if __name__ == "__main__":
     main()
