@@ -6,7 +6,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.decomposition import PCA
 from dataloader import TranscriptLoader
 from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
+from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import StratifiedKFold, cross_validate
 import seaborn as sns
@@ -20,9 +20,9 @@ def clean_id(raw_id):
     Standardizes IDs by removing prefixes and leading zeros.
     Converts 'Process-rec_097' or 'rec-97' into '97'.
     """
-    # Remove 'Process-', 'rec-', 'rec_', and non-numeric prefixes
+    # Removes Process-, rec-, rec_, and non-numeric prefixes
     clean = re.sub(r'^(Process-|rec[-_])', '', str(raw_id), flags=re.IGNORECASE)
-    # Remove leading zeros (e.g., '097' -> '97')
+    # Remove leading zeros (e.g 097 -> 97)
     return clean.lstrip('0')
 
 def generate_diagnosis_embeddings(data_dir='data'):
@@ -42,7 +42,7 @@ def generate_diagnosis_embeddings(data_dir='data'):
         merged_row = metadata[metadata['anyon_IDs'] == folder_id]
         if merged_row.empty: continue
             
-        # Standardize Diagnosis
+        # Standardise Diagnosis
         raw_diag = str(merged_row['diagnosis'].iloc[0]).strip().upper()
         if 'DEMENTIA' in raw_diag: diagnosis = 'Dementia'
         elif 'MCI' in raw_diag: diagnosis = 'MCI'
@@ -94,7 +94,7 @@ def visualise_by_diagnosis(df, task_filter='SFT'):
     
     fig, ax = plt.subplots(figsize=(12, 8))
     
-    # 1. Plot the dots
+    # Plots the dots
     for label, color in color_map.items():
         mask = subset['diagnosis'] == label
         if not mask.any(): 
@@ -111,7 +111,7 @@ def visualise_by_diagnosis(df, task_filter='SFT'):
             linewidth=0.8
         )
     
-    # 2. Add labels ONLY if it's a single file
+    # Adds labels ONLY if it's a single file
     # We check the number of unique recordings in the original df
     if df['recording'].nunique() == 1:
         for i, row in subset.iterrows():
@@ -144,7 +144,7 @@ def generate_single_file_embeddings(file_number, data_dir='data'):
     loader = TranscriptLoader(data_dir=Path(data_dir))
     model = SentenceTransformer('all-MiniLM-L6-v2')
     
-    # 1. Discover all files and filter for the specific number
+    # Discovers all files and filter for the specific number
     transcript_paths = loader.discover_transcript_files()
     target_paths = [p for p in transcript_paths if f"rec-{file_number}" in p.name]
     
@@ -158,7 +158,7 @@ def generate_single_file_embeddings(file_number, data_dir='data'):
     for path in target_paths:
         df = loader.load_transcript(path)
         
-        # 2. Extract base ID and merge with metadata
+        # Extracts base ID and merges with metadata
         recording_id = path.stem.split('__')[0].strip()
         df['recording'] = recording_id 
         merged_df = loader.merge_with_metadata(df)
@@ -167,7 +167,7 @@ def generate_single_file_embeddings(file_number, data_dir='data'):
             print(f"Warning: No metadata found for {recording_id}")
             continue
             
-        # 3. Standardize diagnosis and generate embeddings
+        # Standardise the diagnosises and generate embeddings
         raw_diag = str(merged_df['diagnosis'].iloc[0]).strip().upper()
         diagnosis = 'Dementia' if 'DEMENTIA' in raw_diag else 'MCI' if 'MCI' in raw_diag else 'HC' if 'HC' in raw_diag else 'Unknown'
 
@@ -189,74 +189,84 @@ def generate_single_file_embeddings(file_number, data_dir='data'):
     return pd.DataFrame(all_data)
 
 
-def train_fusion_svm_binary_pca(df, k_folds=5, n_components=20):
+def train_lr_classifier(df, k_folds=6, n_components=20, task_mode='Fused', binary_mode=True):
     """
-    Binary SVM with PCA Dimensionality Reduction.
-    Reduces 772 features to the top components to improve Dementia recall.
-    Excludes MCI to focus purely on Dementia vs HC screening.
+    Implements Logistic Regression with Task Separation (SFT vs PFT vs Fused).
+    Supports Strategy B (PCA) and Strategy C (Binary: HC vs Dementia).
     """
     recordings = df['recording'].unique()
-    fused_patient_data = []
+    processed_data = []
 
-    # 1. EARLY FUSION: Combine SFT and PFT tasks (Exact same as before)
+    # FEATURE EXTRACTION LOOP
     for rid in recordings:
         patient_subset = df[df['recording'] == rid]
+        
+        # Filter by task based on the mode
         sft_sub = patient_subset[patient_subset['task'] == 'SFT'].sort_values('start_time')
         pft_sub = patient_subset[patient_subset['task'] == 'PFT'].sort_values('start_time')
         
-        if sft_sub.empty or pft_sub.empty: continue
-            
-        sft_mean_emb = np.mean(np.stack(sft_sub['embedding'].values), axis=0)
-        sft_count, sft_pause = len(sft_sub), (sft_sub['start_time'].shift(-1) - sft_sub['end_time']).mean()
+        # Skip if the required task data is missing
+        if (task_mode == 'Fused' and (sft_sub.empty or pft_sub.empty)): continue
+        if (task_mode == 'SFT' and sft_sub.empty): continue
+        if (task_mode == 'PFT' and pft_sub.empty): continue
+
+        # EXTRACT ONLY SFT FEATURES
+        if not sft_sub.empty:
+            sft_mean = np.mean(np.stack(sft_sub['embedding'].values), axis=0)
+            s_pause = (sft_sub['start_time'].shift(-1) - sft_sub['end_time']).mean()
+            sft_feats = np.concatenate([sft_mean, [len(sft_sub), s_pause if not np.isnan(s_pause) else 0]])
+
+        # EXTRACT ONLY PFT FEATURES
+        if not pft_sub.empty:
+            pft_mean = np.mean(np.stack(pft_sub['embedding'].values), axis=0)
+            p_pause = (pft_sub['start_time'].shift(-1) - pft_sub['end_time']).mean()
+            pft_feats = np.concatenate([pft_mean, [len(pft_sub), p_pause if not np.isnan(p_pause) else 0]])
+
+        # FUSION OF BOTH OR SINGLE TASK
+        if task_mode == 'Fused':
+            final_vector = np.concatenate([sft_feats, pft_feats])
+        elif task_mode == 'SFT':
+            final_vector = sft_feats
+        else: # PFT
+            final_vector = pft_feats
         
-        pft_mean_emb = np.mean(np.stack(pft_sub['embedding'].values), axis=0)
-        pft_count, pft_pause = len(pft_sub), (pft_sub['start_time'].shift(-1) - pft_sub['end_time']).mean()
-        
-        fusion_vector = np.concatenate([
-            sft_mean_emb, pft_mean_emb, 
-            [sft_count, sft_pause if not np.isnan(sft_pause) else 0, 
-             pft_count, pft_pause if not np.isnan(pft_pause) else 0]
-        ])
-        
-        fused_patient_data.append({
-            'features': np.nan_to_num(fusion_vector), 
-            'diagnosis': sft_sub['diagnosis'].iloc[0]
+        processed_data.append({
+            'features': np.nan_to_num(final_vector), 
+            'diagnosis': patient_subset['diagnosis'].iloc[0]
         })
 
-    final_df = pd.DataFrame(fused_patient_data)
+    final_df = pd.DataFrame(processed_data)
 
-    # === STRATEGY C FILTER: Exclude MCI ===
-    binary_df = final_df[final_df['diagnosis'].isin(['HC', 'Dementia'])].copy()
+    # Exclude MCI if in binary mode (2 way classification)
+    if binary_mode:
+        final_df = final_df[final_df['diagnosis'].isin(['HC', 'Dementia'])].copy()
     
-    X = np.array(binary_df['features'].tolist())
-    y = np.array(binary_df['diagnosis'].tolist())
+    X = np.array(final_df['features'].tolist())
+    y = np.array(final_df['diagnosis'].tolist())
 
-    # 2. K-FOLD PREDICTIONS: Updated with PCA Pipeline
+    # K-FOLD PREDICTIONS: Logistic Regression Pipeline
     cv = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
     
-    # STRATEGY B: The Pipeline now includes PCA
-    # This reduces the 772 features to n_components (e.g., 20)
+    # Using Logistic Regression with Balanced weights
     pipeline = Pipeline([
         ('scaler', StandardScaler()), 
         ('pca', PCA(n_components=n_components, random_state=42)),
-        ('svc', SVC(kernel='linear', C=1.0, class_weight='balanced', random_state=42))
+        ('classifier', LogisticRegression(class_weight='balanced', random_state=42, max_iter=1000))
     ])
     
     all_y_true, all_y_pred = [], []
 
-    print(f"Validating Binary SVM (HC vs Dem) with PCA ({n_components} components) across {k_folds} folds...")
+    print(f"Validating {task_mode} LR ({'Binary' if binary_mode else '3-Class'}) across {k_folds} folds...")
     for train_idx, test_idx in cv.split(X, y):
         pipeline.fit(X[train_idx], y[train_idx])
         all_y_pred.extend(pipeline.predict(X[test_idx]))
         all_y_true.extend(y[test_idx])
 
-    # 3. OUTPUT RESULTS
-    print(f"\n=== Binary Results (N={len(X)}, Features={n_components}) ===")
+    print(f"\n=== Final {task_mode} LR Results (All {len(X)} Participants) ===")
     print(f"Overall Accuracy: {accuracy_score(all_y_true, all_y_pred):.2%}")
     print(classification_report(all_y_true, all_y_pred, zero_division=0))
 
-    # 4. PLOT CONFUSION MATRIX
-    plot_fused_confusion_matrix(all_y_true, all_y_pred, title=f"Binary SVM + PCA ({n_components} comps)")
+    plot_fused_confusion_matrix(all_y_true, all_y_pred, title=f"LR: {task_mode} Mode")
 
     pipeline.fit(X, y)
     return pipeline
@@ -266,13 +276,13 @@ def plot_fused_confusion_matrix(y_true, y_pred, title="Fused SVM Confusion Matri
     Plots a heatmap that dynamically detects class labels to avoid 
     label mismatch in binary vs multiclass modes.
     """
-    # 1. Detect unique labels present in the data and sort them 
+    # Detects unique labels present in the data and sorts them 
     # This ensures 'Dementia' and 'HC' appear in the correct order.
     class_names = sorted(list(set(y_true))) 
     
     cm = confusion_matrix(y_true, y_pred, labels=class_names)
     
-    # 2. Calculate percentages for each row (True Label)
+    # Calculate percentages for each row (True Positive)
     cm_percent = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis] * 100
     
     labels = []
@@ -293,5 +303,4 @@ def plot_fused_confusion_matrix(y_true, y_pred, title="Fused SVM Confusion Matri
 
 if __name__ == "__main__":
     all_results = generate_diagnosis_embeddings()
-    final_model = train_fusion_svm_binary_pca(all_results, k_folds=5, n_components=20)
     visualise_by_diagnosis(all_results, task_filter='SFT')
