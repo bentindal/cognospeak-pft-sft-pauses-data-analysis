@@ -26,13 +26,6 @@ import nltk
 from nltk.stem import WordNetLemmatizer
 import matplotlib.pyplot as plt
 
-N_LIMIT = 20
-RANDOM_SEED = 42
-K_FOLDS = 5
-MIN_TOKENS = 2
-
-nltk.download('wordnet')
-nltk.download('omw-1.4')
 
 
 loader = dataloader.TranscriptLoader()
@@ -79,7 +72,7 @@ for stem, df in frames_dict.items():
         task_diagnosis_frames[task][diagnosis][stem] = df
 
 
-def build_corpus(dataframes, min_tokens=MIN_TOKENS):
+def build_corpus(dataframes, min_tokens=2):
     corpus = []
     skipped = 0
     for df in dataframes:
@@ -99,7 +92,7 @@ def build_corpus(dataframes, min_tokens=MIN_TOKENS):
         corpus.append(text)
     return corpus
 
-def plot_tfidf_comparison(task_name, task_data, n_limit=N_LIMIT):
+def plot_tfidf_comparison(task_name, task_data, n_limit=20):
     """
     Creates a side-by-side bar chart for HC, MCI, and DEMENTIA.
     """
@@ -161,7 +154,7 @@ def build_pipeline():
         # ('clf', RandomForestClassifier(n_estimators=100, class_weight='balanced_subsample'))
     ])
 
-def build_dataset(task_diagnosis_frames, tasks, diagnoses, min_tokens=MIN_TOKENS):
+def build_dataset(task_diagnosis_frames, tasks, diagnoses, min_tokens=2):
     X, y, groups = [], [], []
 
     skipped = 0 
@@ -188,8 +181,8 @@ def build_dataset(task_diagnosis_frames, tasks, diagnoses, min_tokens=MIN_TOKENS
     print(f"Skipped {skipped} short transcripts")
     return X, y, groups
 
-def run_cv_experiment_with_cm(X, y, k=K_FOLDS):
-    skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=RANDOM_SEED)
+def run_cv_experiment_with_cm(X, y, k=5):
+    skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
     pipeline = build_pipeline()
 
     metrics = []
@@ -223,7 +216,7 @@ def run_task_experiment(task_name, task_diagnosis_frames):
         task_diagnosis_frames, 
         tasks=[task_name], 
         diagnoses=TARGET_DIAGNOSES,
-        min_tokens=MIN_TOKENS
+        min_tokens=2
     )
 
     if not X:
@@ -272,7 +265,7 @@ def main():
     for task in TARGET_TASKS:
         print(f"Generating visual analysis for {task}...")
         run_task_experiment(task, task_diagnosis_frames)
-        plot_tfidf_comparison(task, task_diagnosis_frames[task], N_LIMIT)
+        plot_tfidf_comparison(task, task_diagnosis_frames[task], 20)
 
 if __name__ == "__main__":
     main()
