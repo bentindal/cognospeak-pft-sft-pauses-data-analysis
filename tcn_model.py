@@ -230,22 +230,9 @@ class TCN(nn.Module):
         
         """Inputs have to have dimension (N, C_in, L_in)"""
         
-        # batch_size=inputs.size()[0]
-        
-        # y_temp = self.network(inputs)  # input should have dimension (N, C, L)
-        
-        # y_temp=y_temp[:,:,self.Receptive_F:].clone()
-        
-        # y_temp=y_temp.transpose(1,2)
-        
-        # out=self.F(y_temp.reshape([-1,y_temp.size()[-1]]))
-        
-        # out=out.reshape([batch_size,y_temp.size()[1],-1]).transpose(1,2)
-        
-        # return out
+
         feats = self.network(inputs)          # (B, C, T)
 
-    # feats = feats[:, :, self.Receptive_F:]  
         tokens = feats.transpose(1, 2)        # (B, T, C)
         tokens = self.proj(tokens)            # (B, T, D)
         return tokens
@@ -289,9 +276,6 @@ class Learner(nn.Module):
 
     def step(self, xb, yb):
         tokens = self.forward(xb)          # (B, T, D)
-
-        # pool over time to get a window representation
-        # win_feat = tokens.mean(dim=1)      # (B, D)  (or tokens[:, -1, :] if causal)
 
         win_feat = tokens[:, -1, :] 
 

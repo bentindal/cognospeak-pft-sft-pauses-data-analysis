@@ -16,6 +16,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.model_selection import StratifiedKFold
 import matplotlib.pyplot as plt
+import hdbscan
 
 from dataloader import TranscriptLoader
 

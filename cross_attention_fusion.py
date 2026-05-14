@@ -5,7 +5,7 @@ import math
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, num_heads):
+    def __init__(self, d_model, num_heads, dropout=0.2):
         super().__init__()
 
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
@@ -19,6 +19,8 @@ class MultiHeadAttention(nn.Module):
         self.W_v = nn.Linear(d_model, d_model)
         self.W_o = nn.Linear(d_model, d_model)
 
+        self.attn_dropout = nn.Dropout(dropout)
+
     def scaled_dot_product_attention(self, Q, K, V, mask=None):
         # Q, K, V: [batch_size, num_heads, seq_len, head_dim]
         attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.head_dim)
@@ -27,6 +29,7 @@ class MultiHeadAttention(nn.Module):
             attn_scores = attn_scores.masked_fill(mask == 0, -1e9)
             
         attn_probs = F.softmax(attn_scores, dim=-1)
+        attn_probs = self.attn_dropout(attn_probs)
         output = torch.matmul(attn_probs, V)
 
         return output, attn_probs

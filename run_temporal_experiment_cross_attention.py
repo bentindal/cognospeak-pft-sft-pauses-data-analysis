@@ -61,7 +61,7 @@ class AETCNFusionClassifier(nn.Module):
         self.head = nn.Sequential(
             nn.Linear(fused_dim, 64),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.5),
             nn.Linear(64, n_classes),
         )
 
@@ -82,8 +82,8 @@ class CrossAttentionFusionClassifier(nn.Module):
         w2v_dim: int,
         static_dim: int = 11,
         static_latent: int = 16,
-        d_model: int = 128,
-        num_heads: int = 8,
+        d_model: int = 64,
+        num_heads: int = 4,
         n_classes: int = 3,
         freeze_ae: bool = True,
     ):
@@ -95,16 +95,16 @@ class CrossAttentionFusionClassifier(nn.Module):
         if freeze_ae:
             for p in self.ae.parameters():
                 p.requires_grad = False
-
+        self.time_proj = nn.Linear(self.tcn.embed_dim, d_model)
         self.lex_proj = nn.Linear(w2v_dim, d_model)
-        self.cross_attn = MultiHeadAttention(d_model=d_model, num_heads=num_heads)
+        self.cross_attn = MultiHeadAttention(d_model=d_model, num_heads=num_heads, dropout=0.4)
         self.norm = nn.LayerNorm(d_model)
 
         fused_dim = d_model + static_latent
         self.head = nn.Sequential(
             nn.Linear(fused_dim, 64),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.5),
             nn.Linear(64, n_classes),
         )
 
@@ -117,6 +117,7 @@ class CrossAttentionFusionClassifier(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         _, z = self.ae(x_seq)               # [B, 8, T_latent]
         h_time = self.tcn(z)                # [B, T, d_model]
+        h_time = self.time_proj(h_time)                
         h_lex = self.lex_proj(x_lex)        # [B, S, d_model]
 
         h_time_attn, weights = self.cross_attn(h_time, h_lex, h_lex, mask=lex_mask)
@@ -137,7 +138,11 @@ class FusionResult:
 
 
 CLASS_NAMES = ["HC", "MCI", "DEMENTIA"]
+BINARY_CLASS_NAMES = ["Healthy (HC)", "Cognitively Impaired"]
 
+def collapse_to_binary_labels(y: np.ndarray) -> np.ndarray:
+    hc_code = DIAG_TO_INT["HC"]
+    return np.where(y == hc_code, 0, 1).astype(np.int64)
 
 def make_lr_features(x_seq: torch.Tensor, x_static: torch.Tensor) -> np.ndarray:
     x_seq_flat = x_seq.reshape(x_seq.shape[0], -1).cpu().numpy()
@@ -156,6 +161,7 @@ def run_logistic_regression_fold(
         class_weight="balanced",
         solver="lbfgs",
         random_state=42,
+        C=0.1,
     )
     clf.fit(x_train, y_train)
     y_pred = clf.predict(x_test)
@@ -163,11 +169,19 @@ def run_logistic_regression_fold(
     return y_pred, acc
 
 
-def build_weighted_ce_from_labels(y_train: np.ndarray, device: torch.device) -> nn.Module:
-    class_counts = np.bincount(y_train, minlength=len(DIAG_TO_INT))
+def build_weighted_ce_from_labels(
+    y_train: np.ndarray,
+    device: torch.device,
+    n_classes: int,
+) -> nn.Module:
+    class_counts = np.bincount(y_train, minlength=n_classes)
+
     class_weights = class_counts.sum() / (class_counts + 1e-8)
     class_weights = class_weights / class_weights.mean()
-    return nn.CrossEntropyLoss(weight=torch.tensor(class_weights, dtype=torch.float32, device=device))
+
+    return nn.CrossEntropyLoss(
+        weight=torch.tensor(class_weights, dtype=torch.float32, device=device)
+    )
 
 
 def make_sequence_embeddings_from_dataframes(
@@ -231,13 +245,14 @@ def train_simple_fusion_classifier(
     device: torch.device,
     epochs: int = 30,
     lr: float = 1e-3,
+    n_classes = 2,
 ) -> FusionResult:
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=1e-3)
 
     y_train = []
     for _, _, yb in train_loader:
         y_train.extend(yb.numpy())
-    criterion = build_weighted_ce_from_labels(np.asarray(y_train), device)
+    criterion = build_weighted_ce_from_labels(np.asarray(y_train), device,n_classes)
 
     best_acc = -1.0
     best_y_true = np.array([])
@@ -298,13 +313,14 @@ def train_cross_attention_classifier(
     device: torch.device,
     epochs: int = 30,
     lr: float = 1e-3,
+    n_classes: int = 2,
 ) -> FusionResult:
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=1e-3)
 
     y_train = []
     for _, _, _, _, yb in train_loader:
         y_train.extend(yb.numpy())
-    criterion = build_weighted_ce_from_labels(np.asarray(y_train), device)
+    criterion = build_weighted_ce_from_labels(np.asarray(y_train), device, n_classes)
 
     best_acc = -1.0
     best_y_true = np.array([])
@@ -364,14 +380,14 @@ def train_cross_attention_classifier(
     return FusionResult(best_acc, best_y_true, best_y_pred)
 
 
-def print_result_block(title: str, y_true: np.ndarray, y_pred: np.ndarray) -> None:
+def print_result_block(title: str, y_true: np.ndarray, y_pred: np.ndarray, class_names: list[str]) -> None:
     print(f"\n{title}")
     print("\nConfusion Matrix:")
     print(confusion_matrix(y_true, y_pred))
-    print("\nTrue class counts:", np.bincount(y_true, minlength=len(DIAG_TO_INT)))
-    print("Pred class counts:", np.bincount(y_pred, minlength=len(DIAG_TO_INT)))
+    print("\nTrue class counts:", np.bincount(y_true, minlength=len(class_names)))
+    print("Pred class counts:", np.bincount(y_pred, minlength=len(class_names)))
     print("\nClassification Report:")
-    print(classification_report(y_true, y_pred, target_names=CLASS_NAMES, zero_division=0))
+    print(classification_report(y_true, y_pred, target_names=class_names, zero_division=0))
 
 
 def plot_fold_accuracies(
@@ -452,17 +468,17 @@ def plot_mean_accuracy_summary(results_dict: dict, output_dir: Path) -> None:
     plt.show()
 
 
-def build_tcn(output_size: int) -> TCN:
+def build_tcn(embed_dim: int = 64) -> TCN:
     return TCN(
         N_C=1,
         input_size=8,
-        output_size=output_size,
+        output_size=embed_dim,
         num_channels=[16, 32],
         K_S=[[3], [3]],
         Dil=[[1], [2]],
         Str=[[1], [1]],
         dropout=0.2,
-        F_Ns=torch.tensor([32, 16, output_size]),
+        F_Ns=torch.tensor([32, 16, embed_dim]),
         dropout_F=0.2,
         Receptive_F=0,
         Norm=0,
@@ -474,6 +490,7 @@ def plot_full_evaluation(
     y_true_dict: dict,
     y_pred_dict: dict,
     output_dir: Path,
+    class_names: list[str],
 ):
     """
     Plots:
@@ -510,8 +527,8 @@ def plot_full_evaluation(
 
         plt.figure(figsize=(5, 4))
         sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
-                    xticklabels=["HC", "MCI", "DEM"],
-                    yticklabels=["HC", "MCI", "DEM"])
+                    xticklabels=class_names,
+                    yticklabels=class_names)
         plt.title(f"{task} - {m} Confusion Matrix")
         plt.xlabel("Predicted")
         plt.ylabel("True")
@@ -535,17 +552,11 @@ def plot_full_evaluation(
         df = pd.DataFrame(report).T
 
         # rename numeric class rows to readable names
-        rename_map = {
-            "0": "HC",
-            "1": "MCI",
-            "2": "DEMENTIA",
-            0: "HC",
-            1: "MCI",
-            2: "DEMENTIA",
-        }
+        rename_map = {str(i): name for i, name in enumerate(class_names)}
+        rename_map.update({i: name for i, name in enumerate(class_names)})
         df = df.rename(index=rename_map)
 
-        wanted_rows = ["HC", "MCI", "DEMENTIA", "macro avg", "weighted avg"]
+        wanted_rows = class_names + ["macro avg", "weighted avg"]
         available_rows = [r for r in wanted_rows if r in df.index]
         df = df.loc[available_rows]
 
@@ -573,17 +584,41 @@ def run_task_cv(
     epochs: int = 30,
     batch_size: int = 8,
     n_splits: int = 5,
-    w2v_embedding_dim: int = 32,
-    w2v_epochs: int = 10,
-    w2v_max_seq_len: int = 64,
-    num_heads: int = 8,
+    w2v_embedding_dim: int = 16,
+    w2v_epochs: int = 8,
+    w2v_max_seq_len: int = 32,
+    num_heads: int = 4,
+    classification_mode: str = "binary",
 ) -> dict:
     data = data_module.load_task(task)
 
+    if classification_mode == "binary":
+        # Binary setup: HC = 0, MCI/Dementia = 1
+        data.y = collapse_to_binary_labels(data.y)
+        class_names = BINARY_CLASS_NAMES
+        experiment_name = "binary"
+        experiment_title = "HC VS NON-HEALTHY"
+        label_counts = {
+            "Healthy (HC)": int((data.y == 0).sum()),
+            "Non-healthy (MCI + DEMENTIA)": int((data.y == 1).sum()),
+        }
+    elif classification_mode == "threeway":
+        # Three-way setup: original labels HC = 0, MCI = 1, DEMENTIA = 2
+        class_names = CLASS_NAMES
+        experiment_name = "threeway"
+        experiment_title = "HC VS MCI VS DEMENTIA"
+        label_counts = {name: int((data.y == code).sum()) for name, code in DIAG_TO_INT.items()}
+    else:
+        raise ValueError("classification_mode must be either 'binary' or 'threeway'")
+
+    n_classes = len(class_names)
+    output_dir = output_dir / experiment_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     print(f"\n{'=' * 80}")
-    print(f"{task} STRATIFIED {n_splits}-FOLD CROSS-VALIDATION")
+    print(f"{task} {experiment_title} STRATIFIED {n_splits}-FOLD CROSS-VALIDATION")
     print(f"{'=' * 80}")
-    print(f"{task} label counts:", {name: int((data.y == code).sum()) for name, code in DIAG_TO_INT.items()})
+    print(f"{task} label counts:", label_counts)
     print(f"All data shapes: seq={data.x_seq.shape} | static={data.x_static.shape}")
 
     w2v_pipe = SemanticEmbeddingPipeline(data_root="data")
@@ -637,8 +672,8 @@ def run_task_cv(
         w2v_pipe.prepare_from_keys(task, train_keys)
         w2v_pipe.train_word2vec(
             task=task,
-            window_size=2,
-            num_negative=3,
+            window_size=1,
+            num_negative=5,
             embedding_dim=w2v_embedding_dim,
             batch_size=256,
             epochs=w2v_epochs,
@@ -676,10 +711,10 @@ def run_task_cv(
         # AE + TCN fusion baseline
         fusion_model = AETCNFusionClassifier(
             ae=ae_trainer.network,
-            tcn=build_tcn(len(DIAG_TO_INT)).to(device),
+            tcn=build_tcn(embed_dim=64).to(device),
             static_dim=x_static_train.shape[1],
             static_latent=16,
-            n_classes=len(DIAG_TO_INT),
+            n_classes=n_classes,
             freeze_ae=True,
         ).to(device)
 
@@ -701,7 +736,9 @@ def run_task_cv(
             device=device,
             epochs=epochs,
             lr=1e-3,
+            n_classes=n_classes,
         )
+
         fusion_fold_accs.append(fusion_result.accuracy)
         all_fusion_true.extend(fusion_result.y_true.tolist())
         all_fusion_pred.extend(fusion_result.y_pred.tolist())
@@ -722,13 +759,13 @@ def run_task_cv(
 
         xattn_model = CrossAttentionFusionClassifier(
             ae=ae_trainer.network,
-            tcn=build_tcn(len(DIAG_TO_INT)).to(device),
+            tcn=build_tcn(embed_dim=64).to(device),
             w2v_dim=w2v_embedding_dim,
             static_dim=x_static_train.shape[1],
             static_latent=16,
-            d_model=128,
+            d_model=64,
             num_heads=num_heads,
-            n_classes=len(DIAG_TO_INT),
+            n_classes=n_classes,
             freeze_ae=True,
         ).to(device)
 
@@ -762,6 +799,7 @@ def run_task_cv(
             device=device,
             epochs=epochs,
             lr=1e-3,
+            n_classes=n_classes,
         )
         xattn_fold_accs.append(xattn_result.accuracy)
         all_xattn_true.extend(xattn_result.y_true.tolist())
@@ -779,34 +817,34 @@ def run_task_cv(
 
     plot_fold_accuracies(task, lr_fold_accs, w2v_fold_accs, fusion_fold_accs, xattn_fold_accs, output_dir)
 
-    plot_confusion_matrix_heatmap(all_lr_true_np, all_lr_pred_np, CLASS_NAMES, f"{task} Temporal LR Confusion Matrix", output_dir / f"{task.lower()}_lr_confusion_matrix.png")
-    plot_confusion_matrix_heatmap(all_w2v_true_np, all_w2v_pred_np, CLASS_NAMES, f"{task} Word2Vec LR Confusion Matrix", output_dir / f"{task.lower()}_w2v_confusion_matrix.png")
-    plot_confusion_matrix_heatmap(all_fusion_true_np, all_fusion_pred_np, CLASS_NAMES, f"{task} AE + TCN Fusion Confusion Matrix", output_dir / f"{task.lower()}_fusion_confusion_matrix.png")
-    plot_confusion_matrix_heatmap(all_xattn_true_np, all_xattn_pred_np, CLASS_NAMES, f"{task} AE + TCN + Word2Vec XAttn Confusion Matrix", output_dir / f"{task.lower()}_xattn_confusion_matrix.png")
-
+    plot_confusion_matrix_heatmap(all_lr_true_np, all_lr_pred_np, class_names, f"{task} Temporal LR Confusion Matrix", output_dir / f"{task.lower()}_lr_confusion_matrix.png")
+    plot_confusion_matrix_heatmap(all_w2v_true_np, all_w2v_pred_np, class_names, f"{task} Word2Vec LR Confusion Matrix", output_dir / f"{task.lower()}_w2v_confusion_matrix.png")
+    plot_confusion_matrix_heatmap(all_fusion_true_np, all_fusion_pred_np, class_names, f"{task} AE + TCN Fusion Confusion Matrix", output_dir / f"{task.lower()}_fusion_confusion_matrix.png")
+    plot_confusion_matrix_heatmap(all_xattn_true_np, all_xattn_pred_np, class_names, f"{task} AE + TCN + Word2Vec XAttn Confusion Matrix", output_dir / f"{task.lower()}_xattn_confusion_matrix.png")
+    
     print(f"\n{'=' * 80}")
     print(f"{task} TEMPORAL LOGISTIC REGRESSION CV RESULTS")
     print(f"{'=' * 80}")
     print(f"Mean fold accuracy: {np.mean(lr_fold_accs):.4f} ± {np.std(lr_fold_accs):.4f}")
-    print_result_block(f"{task} Temporal LR Aggregated Results", all_lr_true_np, all_lr_pred_np)
+    print_result_block(f"{task} Temporal LR Aggregated Results", all_lr_true_np, all_lr_pred_np, class_names)
 
     print(f"\n{'=' * 80}")
     print(f"{task} WORD2VEC LOGISTIC REGRESSION CV RESULTS")
     print(f"{'=' * 80}")
     print(f"Mean fold accuracy: {np.mean(w2v_fold_accs):.4f} ± {np.std(w2v_fold_accs):.4f}")
-    print_result_block(f"{task} Word2Vec LR Aggregated Results", all_w2v_true_np, all_w2v_pred_np)
+    print_result_block(f"{task} Word2Vec LR Aggregated Results", all_w2v_true_np, all_w2v_pred_np, class_names)
 
     print(f"\n{'=' * 80}")
     print(f"{task} AE + TCN FUSION CV RESULTS")
     print(f"{'=' * 80}")
     print(f"Mean fold accuracy: {np.mean(fusion_fold_accs):.4f} ± {np.std(fusion_fold_accs):.4f}")
-    print_result_block(f"{task} Fusion Aggregated Results", all_fusion_true_np, all_fusion_pred_np)
+    print_result_block(f"{task} Fusion Aggregated Results", all_fusion_true_np, all_fusion_pred_np, class_names)
 
     print(f"\n{'=' * 80}")
     print(f"{task} AE + TCN + WORD2VEC CROSS-ATTENTION CV RESULTS")
     print(f"{'=' * 80}")
     print(f"Mean fold accuracy: {np.mean(xattn_fold_accs):.4f} ± {np.std(xattn_fold_accs):.4f}")
-    print_result_block(f"{task} Cross-Attention Aggregated Results", all_xattn_true_np, all_xattn_pred_np)
+    print_result_block(f"{task} Cross-Attention Aggregated Results", all_xattn_true_np, all_xattn_pred_np, class_names)
 
     # Combined evaluation plots
 
@@ -824,7 +862,14 @@ def run_task_cv(
         "Cross-Attn": all_xattn_pred,
     }
 
-    plot_full_evaluation(task, y_true_dict, y_pred_dict, output_dir)
+    plot_full_evaluation(task, y_true_dict, y_pred_dict, output_dir, class_names)
+    plot_confusion_matrix_heatmap(
+        all_xattn_true_np,
+        all_xattn_pred_np,
+        class_names,
+        f"{task} Cross-Attention {experiment_title} Confusion Matrix",
+        output_dir / f"{task.lower()}_xattn_{experiment_name}_confusion_matrix.png"
+    )
 
     return {
         "lr_mean": float(np.mean(lr_fold_accs)),
@@ -846,9 +891,15 @@ def main() -> None:
     parser.add_argument("--k-folds", type=int, default=5)
     parser.add_argument("--output-dir", type=str, default="results_graphs")
     parser.add_argument("--w2v-embedding-dim", type=int, default=32)
-    parser.add_argument("--w2v-epochs", type=int, default=10)
-    parser.add_argument("--w2v-max-seq-len", type=int, default=64)
-    parser.add_argument("--num-heads", type=int, default=8)
+    parser.add_argument("--w2v-epochs", type=int, default=8)
+    parser.add_argument("--w2v-max-seq-len", type=int, default=32)
+    parser.add_argument("--num-heads", type=int, default=4)
+    parser.add_argument(
+        "--classification-mode",
+        choices=["binary", "threeway", "both"],
+        default="both",
+        help="Run HC vs non-healthy, HC/MCI/DEMENTIA, or both.",
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -858,40 +909,33 @@ def main() -> None:
     loader = TranscriptLoader()
     data_module = TemporalDataModule(loader=loader, bin_sec=3.0, max_time=60.0)
 
-    summary_results: dict[str, dict] = {}
+    modes = ["binary", "threeway"] if args.classification_mode == "both" else [args.classification_mode]
+    tasks = ["PFT", "SFT"] if args.task == "both" else [args.task]
 
-    if args.task in {"PFT", "both"}:
-        summary_results["PFT"] = run_task_cv(
-            "PFT",
-            data_module,
-            device=device,
-            output_dir=output_dir,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            n_splits=args.k_folds,
-            w2v_embedding_dim=args.w2v_embedding_dim,
-            w2v_epochs=args.w2v_epochs,
-            w2v_max_seq_len=args.w2v_max_seq_len,
-            num_heads=args.num_heads,
-        )
+    all_summary_results: dict[str, dict[str, dict]] = {}
 
-    if args.task in {"SFT", "both"}:
-        summary_results["SFT"] = run_task_cv(
-            "SFT",
-            data_module,
-            device=device,
-            output_dir=output_dir,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            n_splits=args.k_folds,
-            w2v_embedding_dim=args.w2v_embedding_dim,
-            w2v_epochs=args.w2v_epochs,
-            w2v_max_seq_len=args.w2v_max_seq_len,
-            num_heads=args.num_heads,
-        )
+    for mode in modes:
+        summary_results: dict[str, dict] = {}
+        for task in tasks:
+            summary_results[task] = run_task_cv(
+                task,
+                data_module,
+                device=device,
+                output_dir=output_dir,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                n_splits=args.k_folds,
+                w2v_embedding_dim=args.w2v_embedding_dim,
+                w2v_epochs=args.w2v_epochs,
+                w2v_max_seq_len=args.w2v_max_seq_len,
+                num_heads=args.num_heads,
+                classification_mode=mode,
+            )
 
-    if len(summary_results) >= 2:
-        plot_mean_accuracy_summary(summary_results, output_dir)
+        all_summary_results[mode] = summary_results
+
+        if len(summary_results) >= 2:
+            plot_mean_accuracy_summary(summary_results, output_dir / mode)
 
 
 if __name__ == "__main__":
