@@ -8,23 +8,13 @@ from dataloader import TranscriptLoader
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import StratifiedKFold, cross_validate
+from sklearn.model_selection import StratifiedKFold
 import seaborn as sns
 from sklearn.metrics import confusion_matrix
 from sklearn.metrics import accuracy_score, classification_report
-import re
 from sklearn.decomposition import PCA
 
-def clean_id(raw_id):
-    """
-    Standardizes IDs by removing prefixes and leading zeros.
-    Converts 'Process-rec_097' or 'rec-97' into '97'.
-    """
-    # Removes Process-, rec-, rec_, and non-numeric prefixes
-    clean = re.sub(r'^(Process-|rec[-_])', '', str(raw_id), flags=re.IGNORECASE)
-    # Remove leading zeros (e.g 097 -> 97)
-    return clean.lstrip('0')
-
+# Generates Embeddings for whole dataset
 def generate_diagnosis_embeddings(data_dir='data'):
     loader = TranscriptLoader(data_dir=Path(data_dir))
     model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -68,17 +58,16 @@ def generate_diagnosis_embeddings(data_dir='data'):
 
     return pd.DataFrame(all_data)
 
+
+# Visualises the semantic space (Either for single file or whole dataset)
+# Shows word labels ONLY if single recording is being analysed
 def visualise_by_diagnosis(df, task_filter='SFT'):
-    """
-    Visualises the semantic space. 
-    Shows word labels ONLY if a single recording is being analyzed.
-    """
-    subset = df[df['task'] == task_filter].copy()
+    df['task'] = df['task'].str.upper()
+    subset = df[df['task'] == task_filter.upper()].copy()
     
-    # Bold, high-contrast palette
     color_map = {
         'Dementia': '#e31a1c', # Bright Red
-        'MCI': '#ff7f00',      # Bright Orange
+        'MCI': "#000dff",      # Bright Blue
         'HC': '#33a02c'        # Bright Green
     }
     
@@ -137,63 +126,62 @@ def visualise_by_diagnosis(df, task_filter='SFT'):
     plt.tight_layout()
     plt.show()
 
+# Processes a specific file by its number (e.g '097') and generates embeddings. (WORKS ONLY FOR REC FILES)
 def generate_single_file_embeddings(file_number, data_dir='data'):
-    """
-    Processes a specific file by its number (e.g., '097') and generates embeddings.
-    """
     loader = TranscriptLoader(data_dir=Path(data_dir))
     model = SentenceTransformer('all-MiniLM-L6-v2')
     
-    # Discovers all files and filter for the specific number
-    transcript_paths = loader.discover_transcript_files()
-    target_paths = [p for p in transcript_paths if f"rec-{file_number}" in p.name]
+    # Use your working metadata loading logic
+    metadata = pd.read_csv('data/speechpause_mata.csv')
+    metadata['anyon_IDs'] = metadata['anyon_IDs'].astype(str).str.strip()
     
-    if not target_paths:
-        print(f"No files found for recording number: {file_number}")
-        return pd.DataFrame()
-
     all_data = []
-    print(f"Processing {len(target_paths)} file(s) for recording {file_number}...")
 
-    for path in target_paths:
-        df = loader.load_transcript(path)
-        
-        # Extracts base ID and merges with metadata
-        recording_id = path.stem.split('__')[0].strip()
-        df['recording'] = recording_id 
-        merged_df = loader.merge_with_metadata(df)
-        
-        if merged_df.empty:
-            print(f"Warning: No metadata found for {recording_id}")
+    columns = ['recording', 'task', 'token', 'diagnosis', 'embedding', 'start_time', 'end_time']
+    
+    # Use the recursive search from your working function
+    transcript_paths = list(Path(data_dir).rglob('*.txt'))
+
+    for path in transcript_paths:
+        if f"rec-{file_number}" not in path.name:
             continue
             
-        # Standardise the diagnosises and generate embeddings
-        raw_diag = str(merged_df['diagnosis'].iloc[0]).strip().upper()
-        diagnosis = 'Dementia' if 'DEMENTIA' in raw_diag else 'MCI' if 'MCI' in raw_diag else 'HC' if 'HC' in raw_diag else 'Unknown'
+        folder_id = path.parent.name.strip()
+        
+        merged_row = metadata[metadata['anyon_IDs'] == folder_id]
 
+        if merged_row.empty:
+            continue
+            
+        raw_diag = str(merged_row['diagnosis'].iloc[0]).strip().upper()
+        if 'DEMENTIA' in raw_diag: diagnosis = 'Dementia'
+        elif 'MCI' in raw_diag: diagnosis = 'MCI'
+        elif 'HC' in raw_diag: diagnosis = 'HC'
+        else: continue
+
+        # Load and process tokens
+        df = loader.load_transcript(path)
         tokens = df['token'].dropna().astype(str).str.lower().tolist()
         if not tokens: continue
             
         embeddings = model.encode(tokens)
         task_type = loader.infer_task_from_filename(path.name)
         
-        for token, emb in zip(tokens, embeddings):
+        for i in range(len(tokens)):
             all_data.append({
-                'recording': recording_id,
+                'recording': folder_id,
                 'task': task_type,
-                'token': token,
+                'token': tokens[i],
+                'start_time': df['start_time'].iloc[i],
+                'end_time': df['end_time'].iloc[i],
                 'diagnosis': diagnosis, 
-                'embedding': emb
+                'embedding': embeddings[i]
             })
 
-    return pd.DataFrame(all_data)
+    return pd.DataFrame(all_data, columns=columns)
 
-
+# Logistic Regression for Healthy vs Non-Healthy binary classification (PCA + K Folds)
 def train_lr_classifier(df, k_folds=6, n_components=20, task_mode='Fused', binary_mode=True):
-    """
-    Implements Logistic Regression with Task Separation (SFT vs PFT vs Fused).
-    Supports Strategy B (PCA) and Strategy C (Binary: HC vs Dementia).
-    """
     recordings = df['recording'].unique()
     processed_data = []
 
@@ -201,28 +189,23 @@ def train_lr_classifier(df, k_folds=6, n_components=20, task_mode='Fused', binar
     for rid in recordings:
         patient_subset = df[df['recording'] == rid]
         
-        # Filter by task based on the mode
         sft_sub = patient_subset[patient_subset['task'] == 'SFT'].sort_values('start_time')
         pft_sub = patient_subset[patient_subset['task'] == 'PFT'].sort_values('start_time')
         
-        # Skip if the required task data is missing
         if (task_mode == 'Fused' and (sft_sub.empty or pft_sub.empty)): continue
         if (task_mode == 'SFT' and sft_sub.empty): continue
         if (task_mode == 'PFT' and pft_sub.empty): continue
 
-        # EXTRACT ONLY SFT FEATURES
         if not sft_sub.empty:
             sft_mean = np.mean(np.stack(sft_sub['embedding'].values), axis=0)
             s_pause = (sft_sub['start_time'].shift(-1) - sft_sub['end_time']).mean()
             sft_feats = np.concatenate([sft_mean, [len(sft_sub), s_pause if not np.isnan(s_pause) else 0]])
 
-        # EXTRACT ONLY PFT FEATURES
         if not pft_sub.empty:
             pft_mean = np.mean(np.stack(pft_sub['embedding'].values), axis=0)
             p_pause = (pft_sub['start_time'].shift(-1) - pft_sub['end_time']).mean()
             pft_feats = np.concatenate([pft_mean, [len(pft_sub), p_pause if not np.isnan(p_pause) else 0]])
 
-        # FUSION OF BOTH OR SINGLE TASK
         if task_mode == 'Fused':
             final_vector = np.concatenate([sft_feats, pft_feats])
         elif task_mode == 'SFT':
@@ -237,17 +220,19 @@ def train_lr_classifier(df, k_folds=6, n_components=20, task_mode='Fused', binar
 
     final_df = pd.DataFrame(processed_data)
 
-    # Exclude MCI if in binary mode (2 way classification)
     if binary_mode:
-        final_df = final_df[final_df['diagnosis'].isin(['HC', 'Dementia'])].copy()
+        # Group MCI and Dementia into 'Non-healthy' and rename HC to 'Healthy'
+        final_df['diagnosis'] = final_df['diagnosis'].replace({
+            'HC': 'Healthy',
+            'Dementia': 'Non-healthy',
+            'MCI': 'Non-healthy'
+        })
     
     X = np.array(final_df['features'].tolist())
     y = np.array(final_df['diagnosis'].tolist())
 
-    # K-FOLD PREDICTIONS: Logistic Regression Pipeline
+    # K-FOLD PREDICTIONS
     cv = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=42)
-    
-    # Using Logistic Regression with Balanced weights
     pipeline = Pipeline([
         ('scaler', StandardScaler()), 
         ('pca', PCA(n_components=n_components, random_state=42)),
@@ -256,13 +241,13 @@ def train_lr_classifier(df, k_folds=6, n_components=20, task_mode='Fused', binar
     
     all_y_true, all_y_pred = [], []
 
-    print(f"Validating {task_mode} LR ({'Binary' if binary_mode else '3-Class'}) across {k_folds} folds...")
+    print(f"Validating {task_mode} LR ({'Healthy vs Non-healthy' if binary_mode else '3-Class'}) across {k_folds} folds...")
     for train_idx, test_idx in cv.split(X, y):
         pipeline.fit(X[train_idx], y[train_idx])
         all_y_pred.extend(pipeline.predict(X[test_idx]))
         all_y_true.extend(y[test_idx])
 
-    print(f"\n=== Final {task_mode} LR Results (All {len(X)} Participants) ===")
+    print(f"\n=== {task_mode} LR Results (All {len(X)} Participants) ===")
     print(f"Overall Accuracy: {accuracy_score(all_y_true, all_y_pred):.2%}")
     print(classification_report(all_y_true, all_y_pred, zero_division=0))
 
@@ -271,13 +256,8 @@ def train_lr_classifier(df, k_folds=6, n_components=20, task_mode='Fused', binar
     pipeline.fit(X, y)
     return pipeline
 
-def plot_fused_confusion_matrix(y_true, y_pred, title="Fused SVM Confusion Matrix"):
-    """
-    Plots a heatmap that dynamically detects class labels to avoid 
-    label mismatch in binary vs multiclass modes.
-    """
-    # Detects unique labels present in the data and sorts them 
-    # This ensures 'Dementia' and 'HC' appear in the correct order.
+# Plots heatmap for binary vs multiclass modes
+def plot_fused_confusion_matrix(y_true, y_pred, title="Confusion Matrix"):
     class_names = sorted(list(set(y_true))) 
     
     cm = confusion_matrix(y_true, y_pred, labels=class_names)
