@@ -1,7 +1,7 @@
-# Exclude all data files - highly private
-data/*
-*.parquet
-*.csv
+# # Exclude all data files - highly private
+# data/*
+# *.parquet
+# *.csv
 
 # Python
 __pycache__/
