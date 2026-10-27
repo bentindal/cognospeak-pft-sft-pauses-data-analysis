@@ -26,8 +26,8 @@ from sklearn.model_selection import StratifiedKFold, cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from dataloader import TranscriptLoader
-from pause_analyzer import compute_pauses, load_transcript, summarize
+from .dataloader import TranscriptLoader
+from .pause_analyzer import compute_pauses, load_transcript, summarize
 
 
 def get_classifier(classifier_name: str) -> Pipeline:
@@ -506,4 +506,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-

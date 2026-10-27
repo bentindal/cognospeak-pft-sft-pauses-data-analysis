@@ -6,7 +6,7 @@ from pathlib import Path
 from sklearn.feature_extraction.text import TfidfVectorizer
 import pandas as pd
 from sklearn.manifold import TSNE
-from dataloader import TranscriptLoader
+from .dataloader import TranscriptLoader
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA

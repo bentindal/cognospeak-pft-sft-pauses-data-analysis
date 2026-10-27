@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from sklearn.decomposition import PCA
-from dataloader import TranscriptLoader
+from .dataloader import TranscriptLoader
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline

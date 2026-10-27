@@ -6,7 +6,7 @@ from typing import Dict, Iterable, Optional
 
 import pandas as pd
 
-DATA_DIR = Path(__file__).resolve().parent / 'data'
+DATA_DIR = Path(__file__).resolve().parents[2] / 'data'
 METADATA_FILE = DATA_DIR / 'speechpause_mata.csv'
 COLUMN_NAMES = ['start_time', 'end_time', 'token']
 
@@ -104,7 +104,7 @@ The CSV metadata file is required to run this analysis. Please:
 
 Example usage:
     from pathlib import Path
-    from dataloader import TranscriptLoader
+    from cognospeak.dataloader import TranscriptLoader
     
     # Option 1: Place CSV in data/ directory as 'speechpause_mata.csv'
     loader = TranscriptLoader()

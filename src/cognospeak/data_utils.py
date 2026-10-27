@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 import torch
 
-from dataloader import TranscriptLoader
-from feature_extraction import base_recording_from_key, dict_to_feature_tensors
+from .dataloader import TranscriptLoader
+from .feature_extraction import base_recording_from_key, dict_to_feature_tensors
 
 DIAG_TO_INT: Dict[str, int] = {"HC": 0, "MCI": 1, "DEMENTIA": 2}
 

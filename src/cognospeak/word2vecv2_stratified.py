@@ -18,7 +18,7 @@ from sklearn.model_selection import StratifiedKFold
 import matplotlib.pyplot as plt
 import hdbscan
 
-from dataloader import TranscriptLoader
+from .dataloader import TranscriptLoader
 
 keras = tf.keras
 layers = tf.keras.layers

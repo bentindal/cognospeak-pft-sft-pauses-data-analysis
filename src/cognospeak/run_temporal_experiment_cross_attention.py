@@ -15,12 +15,12 @@ from torch.utils.data import DataLoader, TensorDataset
 import seaborn as sns
 import pandas as pd
 
-from ae import Autoencoder, ConvolutionalAutoencoder, Decoder, Encoder
-from cross_attention_fusion import MultiHeadAttention
-from data_utils import DIAG_TO_INT, TemporalDataModule
-from dataloader import TranscriptLoader
-from tcn_model import TCN
-from word2vecv2_stratified import SemanticEmbeddingPipeline
+from .ae import Autoencoder, ConvolutionalAutoencoder, Decoder, Encoder
+from .cross_attention_fusion import MultiHeadAttention
+from .data_utils import DIAG_TO_INT, TemporalDataModule
+from .dataloader import TranscriptLoader
+from .tcn_model import TCN
+from .word2vecv2_stratified import SemanticEmbeddingPipeline
 
 
 class StaticEncoder(nn.Module):

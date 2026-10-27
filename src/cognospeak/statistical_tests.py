@@ -6,7 +6,7 @@ from scipy.stats import ttest_ind
 from statsmodels.stats.anova import anova_lm
 from statsmodels.formula.api import ols
 
-from plotting import DIAGNOSIS_PALETTE, HEALTH_PALETTE
+from .plotting import DIAGNOSIS_PALETTE, HEALTH_PALETTE
 
 
 def perform_3class_ttests(pft_data: pd.DataFrame, sft_data: pd.DataFrame) -> dict:
